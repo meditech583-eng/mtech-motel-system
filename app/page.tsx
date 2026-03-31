@@ -1,0 +1,2917 @@
+// @ts-nocheck
+"use client";
+
+import { useEffect, useMemo, useState } from "react";
+import { createClient } from "../lib/supabase/client";
+
+const supabase = createClient();
+
+type Tab = "dashboard" | "rooms" | "bookings" | "guests" | "payments" | "reports";
+
+type RoomStatus =
+  | "Available"
+  | "Occupied"
+  | "Reserved"
+  | "Cleaning"
+  | "Maintenance";
+
+type BookingStatus = "Reserved" | "Checked In" | "Checked Out" | "Cancelled";
+type BillingType = "Night" | "Month";
+
+type Room = {
+  id: number;
+  room_number: string;
+  room_type: string;
+  price: number;
+  billing_type: BillingType;
+  status: RoomStatus;
+  notes: string | null;
+  created_at?: string;
+};
+
+type Guest = {
+  id: number;
+  full_name: string;
+  phone: string | null;
+  email: string | null;
+  id_number: string | null;
+  address: string | null;
+  notes: string | null;
+  created_at?: string;
+};
+
+type Booking = {
+  id: number;
+  guest_name: string;
+  phone: string | null;
+  room_id: number | null;
+  room_number: string | null;
+  check_in_date: string;
+  check_out_date: string;
+  total_amount: number;
+  deposit: number;
+  balance: number;
+  status: BookingStatus;
+  created_at?: string;
+};
+
+type Payment = {
+  id: number;
+  booking_id: number;
+  amount: number;
+  payment_method: string | null;
+  payment_date: string | null;
+  created_at?: string;
+};
+
+type BookingView = Booking & {
+  paid: number;
+  due: number;
+  room?: Room | undefined;
+};
+
+function todayDate() {
+  return new Date().toISOString().split("T")[0];
+}
+
+function firstDayOfMonth() {
+  const now = new Date();
+  return new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split("T")[0];
+}
+
+function formatK(value: number | string | null | undefined) {
+  const amount = Number(value || 0);
+  return `K${amount.toLocaleString()}`;
+}
+
+function getRoomStatusFromBooking(status: BookingStatus): RoomStatus {
+  if (status === "Checked In") return "Occupied";
+  if (status === "Reserved") return "Reserved";
+  if (status === "Checked Out") return "Cleaning";
+  return "Available";
+}
+
+function calculateDuration(
+  billingType: BillingType | undefined,
+  checkInDate: string,
+  checkOutDate: string
+) {
+  if (!billingType || !checkInDate || !checkOutDate) return 0;
+
+  const start = new Date(checkInDate);
+  const end = new Date(checkOutDate);
+
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return 0;
+
+  const diffMs = end.getTime() - start.getTime();
+  const diffDays = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+
+  if (billingType === "Month") {
+    return Math.max(1, Math.ceil(Math.max(diffDays, 1) / 30));
+  }
+
+  return Math.max(1, diffDays);
+}
+
+function dateInRange(dateValue: string | null | undefined, start: string, end: string) {
+  if (!dateValue) return false;
+  const onlyDate = String(dateValue).slice(0, 10);
+  return onlyDate >= start && onlyDate <= end;
+}
+
+function normalize(value: any) {
+  return String(value || "").toLowerCase().trim();
+}
+
+function overlaps(aStart: string, aEnd: string, bStart: string, bEnd: string) {
+  if (!aStart || !aEnd || !bStart || !bEnd) return false;
+  return aStart < bEnd && bStart < aEnd;
+}
+
+const roomStatusStyles: Record<RoomStatus, string> = {
+  Available: "bg-emerald-100 text-emerald-700 border-emerald-200",
+  Occupied: "bg-rose-100 text-rose-700 border-rose-200",
+  Reserved: "bg-amber-100 text-amber-700 border-amber-200",
+  Cleaning: "bg-sky-100 text-sky-700 border-sky-200",
+  Maintenance: "bg-slate-200 text-slate-700 border-slate-300",
+};
+
+const bookingStatusStyles: Record<BookingStatus, string> = {
+  Reserved: "bg-amber-100 text-amber-700 border-amber-200",
+  "Checked In": "bg-rose-100 text-rose-700 border-rose-200",
+  "Checked Out": "bg-emerald-100 text-emerald-700 border-emerald-200",
+  Cancelled: "bg-slate-200 text-slate-700 border-slate-300",
+};
+
+function AppShell({
+  children,
+  title,
+  subtitle,
+  activeTab,
+  setActiveTab,
+  onSignOut,
+  userEmail,
+}: any) {
+  return (
+    <main className="min-h-screen bg-slate-100 text-slate-900">
+      <div className="flex min-h-screen">
+        <aside className="hidden w-72 shrink-0 border-r border-slate-200 bg-gradient-to-b from-slate-950 via-slate-900 to-indigo-950 text-white lg:block">
+          <div className="border-b border-white/10 p-6">
+            <div className="rounded-3xl bg-white/5 p-4 shadow-lg ring-1 ring-white/10 backdrop-blur">
+              <h1 className="text-3xl font-black tracking-tight">MTECH Stay</h1>
+              <p className="mt-1 text-sm text-slate-300">Premium Motel Suite</p>
+            </div>
+          </div>
+
+          <div className="px-4 py-5">
+            <div className="mb-4 rounded-2xl bg-white/5 p-4 ring-1 ring-white/10">
+              <p className="text-xs uppercase tracking-[0.25em] text-slate-400">Signed in</p>
+              <p className="mt-2 break-all text-sm font-medium text-slate-100">{userEmail}</p>
+            </div>
+
+            <nav className="space-y-2">
+              <SidebarButton label="Dashboard" active={activeTab === "dashboard"} onClick={() => setActiveTab("dashboard")} />
+              <SidebarButton label="Rooms" active={activeTab === "rooms"} onClick={() => setActiveTab("rooms")} />
+              <SidebarButton label="Bookings" active={activeTab === "bookings"} onClick={() => setActiveTab("bookings")} />
+              <SidebarButton label="Guests" active={activeTab === "guests"} onClick={() => setActiveTab("guests")} />
+              <SidebarButton label="Payments" active={activeTab === "payments"} onClick={() => setActiveTab("payments")} />
+              <SidebarButton label="Reports" active={activeTab === "reports"} onClick={() => setActiveTab("reports")} />
+            </nav>
+
+            <button
+              onClick={onSignOut}
+              className="mt-6 w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm font-semibold text-white transition hover:bg-white/10"
+            >
+              Sign Out
+            </button>
+          </div>
+        </aside>
+
+        <div className="flex-1">
+          <header className="border-b border-slate-200 bg-white/90 px-4 py-4 shadow-sm backdrop-blur sm:px-6">
+            <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.25em] text-indigo-600">
+                  Live Motel Operations
+                </p>
+                <h2 className="mt-1 text-3xl font-black tracking-tight text-slate-900">{title}</h2>
+                <p className="mt-1 text-sm text-slate-500">{subtitle}</p>
+              </div>
+
+              <div className="flex flex-wrap gap-2 lg:hidden">
+                <MobileTabButton label="Dashboard" active={activeTab === "dashboard"} onClick={() => setActiveTab("dashboard")} />
+                <MobileTabButton label="Rooms" active={activeTab === "rooms"} onClick={() => setActiveTab("rooms")} />
+                <MobileTabButton label="Bookings" active={activeTab === "bookings"} onClick={() => setActiveTab("bookings")} />
+                <MobileTabButton label="Guests" active={activeTab === "guests"} onClick={() => setActiveTab("guests")} />
+                <MobileTabButton label="Payments" active={activeTab === "payments"} onClick={() => setActiveTab("payments")} />
+                <MobileTabButton label="Reports" active={activeTab === "reports"} onClick={() => setActiveTab("reports")} />
+              </div>
+            </div>
+          </header>
+
+          <div className="p-4 sm:p-6">{children}</div>
+        </div>
+      </div>
+    </main>
+  );
+}
+
+export default function MotelSupabasePremiumPage() {
+  const [activeTab, setActiveTab] = useState<Tab>("dashboard");
+  const [booting, setBooting] = useState(true);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+  const [messageType, setMessageType] = useState<"success" | "error" | "info">("info");
+  const [user, setUser] = useState<any>(null);
+
+  const [authMode, setAuthMode] = useState<"login" | "signup">("login");
+  const [authForm, setAuthForm] = useState({
+    full_name: "",
+    email: "",
+    password: "",
+  });
+
+  const [rooms, setRooms] = useState<Room[]>([]);
+  const [guests, setGuests] = useState<Guest[]>([]);
+  const [bookings, setBookings] = useState<Booking[]>([]);
+  const [payments, setPayments] = useState<Payment[]>([]);
+
+  const [roomSearch, setRoomSearch] = useState("");
+  const [roomStatusFilter, setRoomStatusFilter] = useState("All");
+
+  const [guestSearch, setGuestSearch] = useState("");
+
+  const [bookingSearch, setBookingSearch] = useState("");
+  const [bookingStatusFilter, setBookingStatusFilter] = useState("All");
+  const [bookingDateFilter, setBookingDateFilter] = useState("");
+
+  const [paymentSearch, setPaymentSearch] = useState("");
+  const [paymentMethodFilter, setPaymentMethodFilter] = useState("All");
+  const [paymentDateFilter, setPaymentDateFilter] = useState("");
+
+  const [reportStartDate, setReportStartDate] = useState(firstDayOfMonth());
+  const [reportEndDate, setReportEndDate] = useState(todayDate());
+
+  const [roomForm, setRoomForm] = useState({
+    room_number: "",
+    room_type: "Apartment",
+    price: 399,
+    billing_type: "Night" as BillingType,
+    status: "Available" as RoomStatus,
+    notes: "",
+  });
+
+  const [guestForm, setGuestForm] = useState({
+    full_name: "",
+    phone: "",
+    email: "",
+    id_number: "",
+    address: "",
+    notes: "",
+  });
+
+  const [bookingForm, setBookingForm] = useState({
+    guest_name: "",
+    phone: "",
+    room_id: 0,
+    check_in_date: "",
+    check_out_date: "",
+    deposit: 0,
+    status: "Reserved" as BookingStatus,
+    notes: "",
+    deposit_method: "Cash",
+  });
+
+  const [paymentForm, setPaymentForm] = useState({
+    booking_id: 0,
+    amount: 0,
+    payment_method: "Cash",
+    payment_date: todayDate(),
+  });
+
+  const [editingRoomId, setEditingRoomId] = useState<number | null>(null);
+  const [editingGuestId, setEditingGuestId] = useState<number | null>(null);
+  const [editingBookingId, setEditingBookingId] = useState<number | null>(null);
+  const [editingPaymentId, setEditingPaymentId] = useState<number | null>(null);
+
+  function showToast(text: string, type: "success" | "error" | "info" = "info") {
+    setMessage(text);
+    setMessageType(type);
+  }
+
+  useEffect(() => {
+    const run = async () => {
+      const { data } = await supabase.auth.getSession();
+      setUser(data.session?.user || null);
+      setBooting(false);
+    };
+
+    run();
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user || null);
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (!user) {
+      setLoading(false);
+      return;
+    }
+    loadAllData(true);
+  }, [user]);
+
+  async function loadAllData(showLoader = false) {
+    try {
+      if (showLoader) setLoading(true);
+
+      const [roomsRes, guestsRes, bookingsRes, paymentsRes] = await Promise.all([
+        supabase.from("motel_rooms").select("*").order("room_number", { ascending: true }),
+        supabase.from("motel_guests").select("*").order("id", { ascending: false }),
+        supabase.from("motel_bookings").select("*").order("id", { ascending: false }),
+        supabase.from("motel_payments").select("*").order("id", { ascending: false }),
+      ]);
+
+      if (roomsRes.error) throw roomsRes.error;
+      if (guestsRes.error) throw guestsRes.error;
+      if (bookingsRes.error) throw bookingsRes.error;
+      if (paymentsRes.error) throw paymentsRes.error;
+
+      setRooms((roomsRes.data || []) as Room[]);
+      setGuests((guestsRes.data || []) as Guest[]);
+      setBookings((bookingsRes.data || []) as Booking[]);
+      setPayments((paymentsRes.data || []) as Payment[]);
+    } catch (error: any) {
+      showToast(error.message || "Failed to load data.", "error");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const selectedRoom = useMemo(
+    () => rooms.find((room) => room.id === Number(bookingForm.room_id)),
+    [rooms, bookingForm.room_id]
+  );
+
+  const bookingDuration = useMemo(() => {
+    return calculateDuration(
+      selectedRoom?.billing_type,
+      bookingForm.check_in_date,
+      bookingForm.check_out_date
+    );
+  }, [selectedRoom, bookingForm.check_in_date, bookingForm.check_out_date]);
+
+  const bookingRate = Number(selectedRoom?.price || 0);
+  const bookingTotal = bookingDuration * bookingRate;
+  const bookingBalance = Math.max(bookingTotal - Number(bookingForm.deposit || 0), 0);
+
+  const bookingViews: BookingView[] = useMemo(() => {
+    return bookings.map((booking) => {
+      const paid = payments
+        .filter((payment) => payment.booking_id === booking.id)
+        .reduce((sum, payment) => sum + Number(payment.amount || 0), 0);
+
+      return {
+        ...booking,
+        paid,
+        due: Math.max(Number(booking.total_amount || 0) - paid, 0),
+        room: rooms.find((room) => room.id === booking.room_id),
+      };
+    });
+  }, [bookings, payments, rooms]);
+
+  const dashboardStats = useMemo(() => {
+    const totalRevenue = payments.reduce((sum, payment) => sum + Number(payment.amount || 0), 0);
+
+    return {
+      totalRooms: rooms.length,
+      availableRooms: rooms.filter((r) => r.status === "Available").length,
+      occupiedRooms: rooms.filter((r) => r.status === "Occupied").length,
+      reservedRooms: rooms.filter((r) => r.status === "Reserved").length,
+      cleaningRooms: rooms.filter((r) => r.status === "Cleaning").length,
+      maintenanceRooms: rooms.filter((r) => r.status === "Maintenance").length,
+      totalGuests: guests.length,
+      totalBookings: bookings.length,
+      totalPayments: payments.length,
+      totalRevenue,
+    };
+  }, [rooms, guests, bookings, payments]);
+
+  const availableRooms = useMemo(() => {
+    return rooms.filter(
+      (room) =>
+        room.status === "Available" ||
+        room.status === "Reserved" ||
+        room.id === Number(bookingForm.room_id)
+    );
+  }, [rooms, bookingForm.room_id]);
+
+  const filteredRooms = useMemo(() => {
+    return rooms.filter((room) => {
+      const matchesSearch =
+        !roomSearch ||
+        normalize(room.room_number).includes(normalize(roomSearch)) ||
+        normalize(room.room_type).includes(normalize(roomSearch)) ||
+        normalize(room.notes).includes(normalize(roomSearch));
+
+      const matchesStatus =
+        roomStatusFilter === "All" || room.status === roomStatusFilter;
+
+      return matchesSearch && matchesStatus;
+    });
+  }, [rooms, roomSearch, roomStatusFilter]);
+
+  const filteredGuests = useMemo(() => {
+    return guests.filter((guest) => {
+      const q = normalize(guestSearch);
+      if (!q) return true;
+      return (
+        normalize(guest.full_name).includes(q) ||
+        normalize(guest.phone).includes(q) ||
+        normalize(guest.email).includes(q) ||
+        normalize(guest.id_number).includes(q) ||
+        normalize(guest.address).includes(q) ||
+        normalize(guest.notes).includes(q)
+      );
+    });
+  }, [guests, guestSearch]);
+
+  const filteredBookings = useMemo(() => {
+    return bookingViews.filter((booking) => {
+      const matchesSearch =
+        !bookingSearch ||
+        normalize(booking.guest_name).includes(normalize(bookingSearch)) ||
+        normalize(booking.phone).includes(normalize(bookingSearch)) ||
+        normalize(booking.room_number).includes(normalize(bookingSearch)) ||
+        normalize(booking.room?.room_type).includes(normalize(bookingSearch));
+
+      const matchesStatus =
+        bookingStatusFilter === "All" || booking.status === bookingStatusFilter;
+
+      const matchesDate =
+        !bookingDateFilter ||
+        booking.check_in_date === bookingDateFilter ||
+        booking.check_out_date === bookingDateFilter ||
+        String(booking.created_at || "").slice(0, 10) === bookingDateFilter;
+
+      return matchesSearch && matchesStatus && matchesDate;
+    });
+  }, [bookingViews, bookingSearch, bookingStatusFilter, bookingDateFilter]);
+
+  const filteredPayments = useMemo(() => {
+    return payments.filter((payment) => {
+      const booking = bookingViews.find((item) => item.id === payment.booking_id);
+
+      const matchesSearch =
+        !paymentSearch ||
+        normalize(booking?.guest_name).includes(normalize(paymentSearch)) ||
+        normalize(booking?.room_number).includes(normalize(paymentSearch)) ||
+        normalize(payment.payment_method).includes(normalize(paymentSearch)) ||
+        normalize(payment.amount).includes(normalize(paymentSearch));
+
+      const matchesMethod =
+        paymentMethodFilter === "All" || (payment.payment_method || "") === paymentMethodFilter;
+
+      const matchesDate =
+        !paymentDateFilter || (payment.payment_date || "") === paymentDateFilter;
+
+      return matchesSearch && matchesMethod && matchesDate;
+    });
+  }, [payments, bookingViews, paymentSearch, paymentMethodFilter, paymentDateFilter]);
+
+  const reportPayments = useMemo(() => {
+    return payments.filter((payment) =>
+      dateInRange(payment.payment_date || payment.created_at, reportStartDate, reportEndDate)
+    );
+  }, [payments, reportStartDate, reportEndDate]);
+
+  const reportBookings = useMemo(() => {
+    return bookingViews.filter(
+      (booking) =>
+        dateInRange(booking.check_in_date, reportStartDate, reportEndDate) ||
+        dateInRange(booking.check_out_date, reportStartDate, reportEndDate) ||
+        dateInRange(booking.created_at, reportStartDate, reportEndDate)
+    );
+  }, [bookingViews, reportStartDate, reportEndDate]);
+
+  const reportStats = useMemo(() => {
+    const revenue = reportPayments.reduce((sum, payment) => sum + Number(payment.amount || 0), 0);
+    const totalOutstanding = bookingViews.reduce((sum, booking) => sum + Number(booking.due || 0), 0);
+
+    const paymentMethodTotals: Record<string, number> = {};
+    reportPayments.forEach((payment) => {
+      const key = payment.payment_method || "Unknown";
+      paymentMethodTotals[key] = (paymentMethodTotals[key] || 0) + Number(payment.amount || 0);
+    });
+
+    return {
+      revenue,
+      totalPayments: reportPayments.length,
+      totalBookings: reportBookings.length,
+      checkedIn: bookingViews.filter((b) => b.status === "Checked In").length,
+      checkedOutInRange: reportBookings.filter((b) => b.status === "Checked Out").length,
+      reservedInRange: reportBookings.filter((b) => b.status === "Reserved").length,
+      occupiedRooms: rooms.filter((r) => r.status === "Occupied").length,
+      availableRooms: rooms.filter((r) => r.status === "Available").length,
+      cleaningRooms: rooms.filter((r) => r.status === "Cleaning").length,
+      maintenanceRooms: rooms.filter((r) => r.status === "Maintenance").length,
+      totalOutstanding,
+      outstandingBookings: bookingViews.filter((b) => Number(b.due || 0) > 0),
+      paymentMethodTotals,
+    };
+  }, [reportPayments, reportBookings, bookingViews, rooms]);
+
+  const arrivalsToday = useMemo(() => {
+    return bookingViews.filter(
+      (b) => b.check_in_date === todayDate() && b.status !== "Cancelled"
+    );
+  }, [bookingViews]);
+
+  const departuresToday = useMemo(() => {
+    return bookingViews.filter(
+      (b) => b.check_out_date === todayDate() && b.status !== "Cancelled"
+    );
+  }, [bookingViews]);
+
+  const dueToday = useMemo(() => {
+    return bookingViews.filter(
+      (b) => Number(b.due || 0) > 0 && b.status !== "Cancelled"
+    );
+  }, [bookingViews]);
+
+  const currentConflict = useMemo(() => {
+    if (!selectedRoom || !bookingForm.check_in_date || !bookingForm.check_out_date) return null;
+
+    return bookingViews.find((booking) => {
+      if (booking.status === "Cancelled") return false;
+      if (Number(booking.room_id) !== Number(selectedRoom.id)) return false;
+      if (editingBookingId && booking.id === editingBookingId) return false;
+      return overlaps(
+        bookingForm.check_in_date,
+        bookingForm.check_out_date,
+        booking.check_in_date,
+        booking.check_out_date
+      );
+    }) || null;
+  }, [selectedRoom, bookingForm.check_in_date, bookingForm.check_out_date, bookingViews, editingBookingId]);
+
+  function resetRoomForm() {
+    setRoomForm({
+      room_number: "",
+      room_type: "Apartment",
+      price: 399,
+      billing_type: "Night",
+      status: "Available",
+      notes: "",
+    });
+    setEditingRoomId(null);
+  }
+
+  function resetGuestForm() {
+    setGuestForm({
+      full_name: "",
+      phone: "",
+      email: "",
+      id_number: "",
+      address: "",
+      notes: "",
+    });
+    setEditingGuestId(null);
+  }
+
+  function resetBookingForm() {
+    setBookingForm({
+      guest_name: "",
+      phone: "",
+      room_id: 0,
+      check_in_date: "",
+      check_out_date: "",
+      deposit: 0,
+      status: "Reserved",
+      notes: "",
+      deposit_method: "Cash",
+    });
+    setEditingBookingId(null);
+  }
+
+  function resetPaymentForm() {
+    setPaymentForm({
+      booking_id: 0,
+      amount: 0,
+      payment_method: "Cash",
+      payment_date: todayDate(),
+    });
+    setEditingPaymentId(null);
+  }
+
+  function clearRoomFilters() {
+    setRoomSearch("");
+    setRoomStatusFilter("All");
+  }
+
+  function clearGuestFilters() {
+    setGuestSearch("");
+  }
+
+  function clearBookingFilters() {
+    setBookingSearch("");
+    setBookingStatusFilter("All");
+    setBookingDateFilter("");
+  }
+
+  function clearPaymentFilters() {
+    setPaymentSearch("");
+    setPaymentMethodFilter("All");
+    setPaymentDateFilter("");
+  }
+
+  function startEditRoom(room: Room) {
+    setEditingRoomId(room.id);
+    setRoomForm({
+      room_number: room.room_number || "",
+      room_type: room.room_type || "Apartment",
+      price: Number(room.price || 0),
+      billing_type: room.billing_type || "Night",
+      status: room.status || "Available",
+      notes: room.notes || "",
+    });
+    setActiveTab("rooms");
+  }
+
+  function startEditGuest(guest: Guest) {
+    setEditingGuestId(guest.id);
+    setGuestForm({
+      full_name: guest.full_name || "",
+      phone: guest.phone || "",
+      email: guest.email || "",
+      id_number: guest.id_number || "",
+      address: guest.address || "",
+      notes: guest.notes || "",
+    });
+    setActiveTab("guests");
+  }
+
+  function startEditBooking(booking: BookingView) {
+    setEditingBookingId(booking.id);
+    setBookingForm({
+      guest_name: booking.guest_name || "",
+      phone: booking.phone || "",
+      room_id: Number(booking.room_id || 0),
+      check_in_date: booking.check_in_date || "",
+      check_out_date: booking.check_out_date || "",
+      deposit: Number(booking.paid || 0),
+      status: booking.status || "Reserved",
+      notes: "",
+      deposit_method: "Cash",
+    });
+    setActiveTab("bookings");
+  }
+
+  function startEditPayment(payment: Payment) {
+    setEditingPaymentId(payment.id);
+    setPaymentForm({
+      booking_id: Number(payment.booking_id || 0),
+      amount: Number(payment.amount || 0),
+      payment_method: payment.payment_method || "Cash",
+      payment_date: payment.payment_date || todayDate(),
+    });
+    setActiveTab("payments");
+  }
+
+  async function handleAuth() {
+    try {
+      if (!authForm.email || !authForm.password) {
+        showToast("Please enter email and password.", "error");
+        return;
+      }
+
+      setBusy(true);
+
+      if (authMode === "signup") {
+        const { error } = await supabase.auth.signUp({
+          email: authForm.email,
+          password: authForm.password,
+          options: {
+            data: {
+              full_name: authForm.full_name || "",
+            },
+          },
+        });
+
+        if (error) throw error;
+        showToast("Signup successful. Check email confirmation if enabled.", "success");
+      } else {
+        const { error } = await supabase.auth.signInWithPassword({
+          email: authForm.email,
+          password: authForm.password,
+        });
+
+        if (error) throw error;
+        showToast("Login successful.", "success");
+      }
+    } catch (error: any) {
+      showToast(error.message || "Authentication failed.", "error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleSignOut() {
+    await supabase.auth.signOut();
+    setUser(null);
+    setMessage("");
+  }
+
+  async function saveRoom() {
+    try {
+      if (!roomForm.room_number.trim()) {
+        showToast("Please enter room number.", "error");
+        return;
+      }
+
+      setBusy(true);
+
+      if (editingRoomId) {
+        const { error } = await supabase
+          .from("motel_rooms")
+          .update({
+            room_number: roomForm.room_number.trim(),
+            room_type: roomForm.room_type,
+            price: Number(roomForm.price || 0),
+            billing_type: roomForm.billing_type,
+            status: roomForm.status,
+            notes: roomForm.notes || null,
+          })
+          .eq("id", editingRoomId);
+
+        if (error) throw error;
+        showToast("Room updated successfully.", "success");
+      } else {
+        const { error } = await supabase.from("motel_rooms").insert({
+          room_number: roomForm.room_number.trim(),
+          room_type: roomForm.room_type,
+          price: Number(roomForm.price || 0),
+          billing_type: roomForm.billing_type,
+          status: roomForm.status,
+          notes: roomForm.notes || null,
+        });
+
+        if (error) throw error;
+        showToast("Room saved successfully.", "success");
+      }
+
+      resetRoomForm();
+      await loadAllData();
+      setActiveTab("rooms");
+    } catch (error: any) {
+      showToast(error.message || "Failed to save room.", "error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function deleteRoom(roomId: number) {
+    if (!window.confirm("Delete this room?")) return;
+    try {
+      setBusy(true);
+      const { error } = await supabase.from("motel_rooms").delete().eq("id", roomId);
+      if (error) throw error;
+      if (editingRoomId === roomId) resetRoomForm();
+      await loadAllData();
+      showToast("Room deleted.", "success");
+    } catch (error: any) {
+      showToast(error.message || "Failed to delete room.", "error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function updateRoomStatus(roomId: number, status: RoomStatus) {
+    try {
+      setBusy(true);
+
+      const { error } = await supabase
+        .from("motel_rooms")
+        .update({ status })
+        .eq("id", roomId);
+
+      if (error) throw error;
+
+      await loadAllData();
+      showToast("Room status updated.", "success");
+    } catch (error: any) {
+      showToast(error.message || "Failed to update room status.", "error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveGuest() {
+    try {
+      if (!guestForm.full_name.trim()) {
+        showToast("Please enter guest name.", "error");
+        return;
+      }
+
+      setBusy(true);
+
+      const payload = {
+        full_name: guestForm.full_name.trim(),
+        phone: guestForm.phone || null,
+        email: guestForm.email || null,
+        id_number: guestForm.id_number || null,
+        address: guestForm.address || null,
+        notes: guestForm.notes || null,
+      };
+
+      if (editingGuestId) {
+        const { error } = await supabase
+          .from("motel_guests")
+          .update(payload)
+          .eq("id", editingGuestId);
+        if (error) throw error;
+        showToast("Guest updated successfully.", "success");
+      } else {
+        const { error } = await supabase.from("motel_guests").insert(payload);
+        if (error) throw error;
+        showToast("Guest saved successfully.", "success");
+      }
+
+      resetGuestForm();
+      await loadAllData();
+      setActiveTab("guests");
+    } catch (error: any) {
+      showToast(error.message || "Failed to save guest.", "error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function deleteGuest(guestId: number) {
+    if (!window.confirm("Delete this guest?")) return;
+    try {
+      setBusy(true);
+      const { error } = await supabase.from("motel_guests").delete().eq("id", guestId);
+      if (error) throw error;
+      if (editingGuestId === guestId) resetGuestForm();
+      await loadAllData();
+      showToast("Guest deleted.", "success");
+    } catch (error: any) {
+      showToast(error.message || "Failed to delete guest.", "error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveBooking() {
+    try {
+      if (!bookingForm.guest_name.trim()) {
+        showToast("Please enter guest name.", "error");
+        return;
+      }
+
+      if (!selectedRoom) {
+        showToast("Please select a room.", "error");
+        return;
+      }
+
+      if (!bookingForm.check_in_date || !bookingForm.check_out_date) {
+        showToast("Please enter check-in and check-out dates.", "error");
+        return;
+      }
+
+      if (bookingForm.check_out_date <= bookingForm.check_in_date) {
+        showToast("Check-out date must be after check-in date.", "error");
+        return;
+      }
+
+      if (currentConflict) {
+        showToast(
+          `Room ${selectedRoom.room_number} is already booked for overlapping dates by ${currentConflict.guest_name}.`,
+          "error"
+        );
+        return;
+      }
+
+      setBusy(true);
+
+      if (editingBookingId) {
+        const currentBooking = bookingViews.find((item) => item.id === editingBookingId);
+        const paidAlready = currentBooking?.paid || 0;
+        const finalBalance = Math.max(bookingTotal - paidAlready, 0);
+
+        const { error: bookingError } = await supabase
+          .from("motel_bookings")
+          .update({
+            guest_name: bookingForm.guest_name.trim(),
+            phone: bookingForm.phone || null,
+            room_id: selectedRoom.id,
+            room_number: selectedRoom.room_number,
+            check_in_date: bookingForm.check_in_date,
+            check_out_date: bookingForm.check_out_date,
+            total_amount: bookingTotal,
+            deposit: paidAlready,
+            balance: finalBalance,
+            status: bookingForm.status,
+          })
+          .eq("id", editingBookingId);
+
+        if (bookingError) throw bookingError;
+
+        const { error: roomError } = await supabase
+          .from("motel_rooms")
+          .update({ status: getRoomStatusFromBooking(bookingForm.status) })
+          .eq("id", selectedRoom.id);
+
+        if (roomError) throw roomError;
+
+        showToast("Booking updated successfully.", "success");
+      } else {
+        const { data: bookingData, error: bookingError } = await supabase
+          .from("motel_bookings")
+          .insert({
+            guest_name: bookingForm.guest_name.trim(),
+            phone: bookingForm.phone || null,
+            room_id: selectedRoom.id,
+            room_number: selectedRoom.room_number,
+            check_in_date: bookingForm.check_in_date,
+            check_out_date: bookingForm.check_out_date,
+            total_amount: bookingTotal,
+            deposit: Number(bookingForm.deposit || 0),
+            balance: bookingBalance,
+            status: bookingForm.status,
+          })
+          .select()
+          .single();
+
+        if (bookingError) throw bookingError;
+
+        const roomStatus = getRoomStatusFromBooking(bookingForm.status);
+
+        const { error: roomError } = await supabase
+          .from("motel_rooms")
+          .update({ status: roomStatus })
+          .eq("id", selectedRoom.id);
+
+        if (roomError) throw roomError;
+
+        const existingGuest = guests.find(
+          (guest) =>
+            guest.full_name?.toLowerCase() === bookingForm.guest_name.trim().toLowerCase() &&
+            (guest.phone || "") === (bookingForm.phone || "")
+        );
+
+        if (!existingGuest) {
+          await supabase.from("motel_guests").insert({
+            full_name: bookingForm.guest_name.trim(),
+            phone: bookingForm.phone || null,
+            notes: bookingForm.notes
+              ? `Auto-created from booking. ${bookingForm.notes}`
+              : "Auto-created from booking.",
+          });
+        }
+
+        if (Number(bookingForm.deposit) > 0 && bookingData?.id) {
+          const { error: paymentError } = await supabase.from("motel_payments").insert({
+            booking_id: bookingData.id,
+            amount: Number(bookingForm.deposit),
+            payment_method: bookingForm.deposit_method || "Cash",
+            payment_date: todayDate(),
+          });
+
+          if (paymentError) throw paymentError;
+        }
+
+        showToast("Booking saved successfully.", "success");
+      }
+
+      resetBookingForm();
+      await loadAllData();
+      setActiveTab("bookings");
+    } catch (error: any) {
+      showToast(error.message || "Failed to save booking.", "error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function deleteBooking(bookingId: number, roomId: number | null) {
+    if (!window.confirm("Delete this booking?")) return;
+    try {
+      setBusy(true);
+      const { error: paymentError } = await supabase.from("motel_payments").delete().eq("booking_id", bookingId);
+      if (paymentError) throw paymentError;
+
+      const { error } = await supabase.from("motel_bookings").delete().eq("id", bookingId);
+      if (error) throw error;
+
+      if (roomId) {
+        await supabase.from("motel_rooms").update({ status: "Available" }).eq("id", roomId);
+      }
+
+      if (editingBookingId === bookingId) resetBookingForm();
+      await loadAllData();
+      showToast("Booking deleted.", "success");
+    } catch (error: any) {
+      showToast(error.message || "Failed to delete booking.", "error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function changeBookingStatus(bookingId: number, roomId: number | null, status: BookingStatus) {
+    try {
+      setBusy(true);
+
+      const currentBooking = bookingViews.find((item) => item.id === bookingId);
+
+      const { error: bookingError } = await supabase
+        .from("motel_bookings")
+        .update({
+          status,
+          balance: Math.max(Number(currentBooking?.total_amount || 0) - Number(currentBooking?.paid || 0), 0),
+          deposit: Number(currentBooking?.paid || 0),
+        })
+        .eq("id", bookingId);
+
+      if (bookingError) throw bookingError;
+
+      if (roomId) {
+        const { error: roomError } = await supabase
+          .from("motel_rooms")
+          .update({ status: getRoomStatusFromBooking(status) })
+          .eq("id", roomId);
+
+        if (roomError) throw roomError;
+      }
+
+      await loadAllData();
+      showToast("Booking status updated.", "success");
+    } catch (error: any) {
+      showToast(error.message || "Failed to update booking status.", "error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function savePayment() {
+    try {
+      const booking = bookingViews.find((item) => item.id === Number(paymentForm.booking_id));
+
+      if (!booking) {
+        showToast("Please select a booking.", "error");
+        return;
+      }
+
+      if (Number(paymentForm.amount) <= 0) {
+        showToast("Please enter a valid payment amount.", "error");
+        return;
+      }
+
+      setBusy(true);
+
+      let adjustment = Number(paymentForm.amount);
+
+      if (editingPaymentId) {
+        const oldPayment = payments.find((item) => item.id === editingPaymentId);
+        const oldAmount = Number(oldPayment?.amount || 0);
+
+        const { error: paymentError } = await supabase
+          .from("motel_payments")
+          .update({
+            booking_id: booking.id,
+            amount: Number(paymentForm.amount),
+            payment_method: paymentForm.payment_method || "Cash",
+            payment_date: paymentForm.payment_date || todayDate(),
+          })
+          .eq("id", editingPaymentId);
+
+        if (paymentError) throw paymentError;
+        adjustment = Number(paymentForm.amount) - oldAmount;
+        showToast("Payment updated successfully.", "success");
+      } else {
+        const { error: paymentError } = await supabase.from("motel_payments").insert({
+          booking_id: booking.id,
+          amount: Number(paymentForm.amount),
+          payment_method: paymentForm.payment_method || "Cash",
+          payment_date: paymentForm.payment_date || todayDate(),
+        });
+
+        if (paymentError) throw paymentError;
+        showToast("Payment recorded successfully.", "success");
+      }
+
+      const newPaid = booking.paid + adjustment;
+      const newBalance = Math.max(Number(booking.total_amount || 0) - newPaid, 0);
+
+      const { error: bookingError } = await supabase
+        .from("motel_bookings")
+        .update({
+          deposit: newPaid,
+          balance: newBalance,
+        })
+        .eq("id", booking.id);
+
+      if (bookingError) throw bookingError;
+
+      resetPaymentForm();
+      await loadAllData();
+      setActiveTab("payments");
+    } catch (error: any) {
+      showToast(error.message || "Failed to save payment.", "error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function deletePayment(paymentId: number, bookingId: number) {
+    if (!window.confirm("Delete this payment?")) return;
+    try {
+      setBusy(true);
+
+      const payment = payments.find((item) => item.id === paymentId);
+      const booking = bookingViews.find((item) => item.id === bookingId);
+
+      const { error } = await supabase.from("motel_payments").delete().eq("id", paymentId);
+      if (error) throw error;
+
+      if (booking) {
+        const newPaid = Math.max(Number(booking.paid || 0) - Number(payment?.amount || 0), 0);
+        const newBalance = Math.max(Number(booking.total_amount || 0) - newPaid, 0);
+
+        await supabase
+          .from("motel_bookings")
+          .update({
+            deposit: newPaid,
+            balance: newBalance,
+          })
+          .eq("id", booking.id);
+      }
+
+      if (editingPaymentId === paymentId) resetPaymentForm();
+      await loadAllData();
+      showToast("Payment deleted.", "success");
+    } catch (error: any) {
+      showToast(error.message || "Failed to delete payment.", "error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function printReceipt(bookingId: number) {
+    const booking = bookingViews.find((item) => item.id === bookingId);
+    if (!booking) {
+      showToast("Booking not found.", "error");
+      return;
+    }
+
+    const bookingPayments = payments
+      .filter((payment) => payment.booking_id === booking.id)
+      .sort((a, b) => (a.id > b.id ? -1 : 1));
+
+    const paymentRows = bookingPayments.length
+      ? bookingPayments
+          .map(
+            (payment) => `
+            <tr>
+              <td style="padding:8px;border:1px solid #dbe3ef;">${payment.payment_date || "-"}</td>
+              <td style="padding:8px;border:1px solid #dbe3ef;">${payment.payment_method || "-"}</td>
+              <td style="padding:8px;border:1px solid #dbe3ef;text-align:right;">${formatK(payment.amount)}</td>
+            </tr>
+          `
+          )
+          .join("")
+      : `
+        <tr>
+          <td colspan="3" style="padding:8px;border:1px solid #dbe3ef;text-align:center;">No payments yet</td>
+        </tr>
+      `;
+
+    const receiptWindow = window.open("", "_blank", "width=900,height=700");
+    if (!receiptWindow) {
+      showToast("Pop-up blocked. Allow pop-ups to print receipt.", "error");
+      return;
+    }
+
+    receiptWindow.document.write(`
+      <html>
+        <head>
+          <title>Receipt - ${booking.guest_name}</title>
+        </head>
+        <body style="font-family:Arial,sans-serif;background:#f8fafc;padding:24px;color:#0f172a;">
+          <div style="max-width:800px;margin:0 auto;background:#fff;border:1px solid #dbe3ef;border-radius:20px;padding:28px;">
+            <div style="display:flex;justify-content:space-between;align-items:start;gap:20px;">
+              <div>
+                <div style="font-size:12px;font-weight:700;letter-spacing:2px;color:#4f46e5;text-transform:uppercase;">MTECH Stay</div>
+                <h1 style="margin:8px 0 4px;font-size:32px;">Payment Receipt</h1>
+                <p style="margin:0;color:#475569;">Motel Management System</p>
+              </div>
+              <div style="text-align:right;">
+                <div style="font-size:13px;color:#64748b;">Receipt Date</div>
+                <div style="font-size:16px;font-weight:700;">${todayDate()}</div>
+              </div>
+            </div>
+
+            <div style="margin-top:24px;display:grid;grid-template-columns:1fr 1fr;gap:18px;">
+              <div style="padding:16px;border:1px solid #dbe3ef;border-radius:14px;background:#f8fafc;">
+                <div style="font-size:12px;color:#64748b;text-transform:uppercase;">Guest</div>
+                <div style="margin-top:8px;font-size:18px;font-weight:700;">${booking.guest_name}</div>
+                <div style="margin-top:6px;color:#475569;">Phone: ${booking.phone || "-"}</div>
+              </div>
+              <div style="padding:16px;border:1px solid #dbe3ef;border-radius:14px;background:#f8fafc;">
+                <div style="font-size:12px;color:#64748b;text-transform:uppercase;">Stay Details</div>
+                <div style="margin-top:8px;color:#475569;">Room: ${booking.room_number || "-"}</div>
+                <div style="margin-top:6px;color:#475569;">Check In: ${booking.check_in_date}</div>
+                <div style="margin-top:6px;color:#475569;">Check Out: ${booking.check_out_date}</div>
+              </div>
+            </div>
+
+            <div style="margin-top:24px;">
+              <table style="width:100%;border-collapse:collapse;">
+                <thead>
+                  <tr style="background:#eef2ff;">
+                    <th style="padding:10px;border:1px solid #dbe3ef;text-align:left;">Payment Date</th>
+                    <th style="padding:10px;border:1px solid #dbe3ef;text-align:left;">Method</th>
+                    <th style="padding:10px;border:1px solid #dbe3ef;text-align:right;">Amount</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${paymentRows}
+                </tbody>
+              </table>
+            </div>
+
+            <div style="margin-top:24px;display:grid;grid-template-columns:1fr 1fr;gap:18px;">
+              <div style="padding:16px;border:1px solid #dbe3ef;border-radius:14px;">
+                <div style="font-size:12px;color:#64748b;text-transform:uppercase;">Booking Status</div>
+                <div style="margin-top:8px;font-size:20px;font-weight:800;">${booking.status}</div>
+              </div>
+              <div style="padding:16px;border:1px solid #dbe3ef;border-radius:14px;background:#f8fafc;">
+                <div style="display:flex;justify-content:space-between;margin-bottom:8px;">
+                  <span>Total</span>
+                  <strong>${formatK(booking.total_amount)}</strong>
+                </div>
+                <div style="display:flex;justify-content:space-between;margin-bottom:8px;">
+                  <span>Paid</span>
+                  <strong>${formatK(booking.paid)}</strong>
+                </div>
+                <div style="display:flex;justify-content:space-between;font-size:18px;font-weight:800;">
+                  <span>Balance</span>
+                  <strong>${formatK(booking.due)}</strong>
+                </div>
+              </div>
+            </div>
+          </div>
+          <script>
+            window.onload = function() {
+              window.print();
+            };
+          </script>
+        </body>
+      </html>
+    `);
+    receiptWindow.document.close();
+  }
+
+  function printReport() {
+    const paymentMethodRows = Object.entries(reportStats.paymentMethodTotals)
+      .map(
+        ([method, total]) => `
+          <tr>
+            <td style="padding:8px;border:1px solid #dbe3ef;">${method}</td>
+            <td style="padding:8px;border:1px solid #dbe3ef;text-align:right;">${formatK(total)}</td>
+          </tr>
+        `
+      )
+      .join("");
+
+    const outstandingRows = reportStats.outstandingBookings.length
+      ? reportStats.outstandingBookings
+          .slice(0, 20)
+          .map(
+            (booking) => `
+              <tr>
+                <td style="padding:8px;border:1px solid #dbe3ef;">${booking.guest_name}</td>
+                <td style="padding:8px;border:1px solid #dbe3ef;">${booking.room_number || "-"}</td>
+                <td style="padding:8px;border:1px solid #dbe3ef;">${booking.status}</td>
+                <td style="padding:8px;border:1px solid #dbe3ef;text-align:right;">${formatK(booking.due)}</td>
+              </tr>
+            `
+          )
+          .join("")
+      : `
+        <tr>
+          <td colspan="4" style="padding:8px;border:1px solid #dbe3ef;text-align:center;">No outstanding balances</td>
+        </tr>
+      `;
+
+    const reportWindow = window.open("", "_blank", "width=1000,height=800");
+    if (!reportWindow) {
+      showToast("Pop-up blocked. Allow pop-ups to print report.", "error");
+      return;
+    }
+
+    reportWindow.document.write(`
+      <html>
+        <head>
+          <title>MTECH Stay Report</title>
+        </head>
+        <body style="font-family:Arial,sans-serif;background:#f8fafc;padding:24px;color:#0f172a;">
+          <div style="max-width:980px;margin:0 auto;background:#fff;border:1px solid #dbe3ef;border-radius:20px;padding:28px;">
+            <div style="display:flex;justify-content:space-between;align-items:start;gap:20px;">
+              <div>
+                <div style="font-size:12px;font-weight:700;letter-spacing:2px;color:#4f46e5;text-transform:uppercase;">MTECH Stay</div>
+                <h1 style="margin:8px 0 4px;font-size:32px;">Performance Report</h1>
+                <p style="margin:0;color:#475569;">From ${reportStartDate} to ${reportEndDate}</p>
+              </div>
+              <div style="text-align:right;">
+                <div style="font-size:13px;color:#64748b;">Printed</div>
+                <div style="font-size:16px;font-weight:700;">${todayDate()}</div>
+              </div>
+            </div>
+
+            <div style="margin-top:24px;display:grid;grid-template-columns:repeat(3,1fr);gap:14px;">
+              <div style="padding:16px;border:1px solid #dbe3ef;border-radius:14px;background:#f8fafc;">
+                <div style="font-size:12px;color:#64748b;text-transform:uppercase;">Revenue</div>
+                <div style="margin-top:8px;font-size:24px;font-weight:800;">${formatK(reportStats.revenue)}</div>
+              </div>
+              <div style="padding:16px;border:1px solid #dbe3ef;border-radius:14px;background:#f8fafc;">
+                <div style="font-size:12px;color:#64748b;text-transform:uppercase;">Payments</div>
+                <div style="margin-top:8px;font-size:24px;font-weight:800;">${reportStats.totalPayments}</div>
+              </div>
+              <div style="padding:16px;border:1px solid #dbe3ef;border-radius:14px;background:#f8fafc;">
+                <div style="font-size:12px;color:#64748b;text-transform:uppercase;">Outstanding Balance</div>
+                <div style="margin-top:8px;font-size:24px;font-weight:800;">${formatK(reportStats.totalOutstanding)}</div>
+              </div>
+            </div>
+
+            <div style="margin-top:24px;">
+              <h3 style="margin:0 0 12px 0;">Payments by Method</h3>
+              <table style="width:100%;border-collapse:collapse;">
+                <thead>
+                  <tr style="background:#eef2ff;">
+                    <th style="padding:10px;border:1px solid #dbe3ef;text-align:left;">Method</th>
+                    <th style="padding:10px;border:1px solid #dbe3ef;text-align:right;">Total</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${paymentMethodRows || `<tr><td colspan="2" style="padding:8px;border:1px solid #dbe3ef;text-align:center;">No payments in selected range</td></tr>`}
+                </tbody>
+              </table>
+            </div>
+
+            <div style="margin-top:24px;">
+              <h3 style="margin:0 0 12px 0;">Outstanding Bookings</h3>
+              <table style="width:100%;border-collapse:collapse;">
+                <thead>
+                  <tr style="background:#eef2ff;">
+                    <th style="padding:10px;border:1px solid #dbe3ef;text-align:left;">Guest</th>
+                    <th style="padding:10px;border:1px solid #dbe3ef;text-align:left;">Room</th>
+                    <th style="padding:10px;border:1px solid #dbe3ef;text-align:left;">Status</th>
+                    <th style="padding:10px;border:1px solid #dbe3ef;text-align:right;">Due</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${outstandingRows}
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <script>
+            window.onload = function() {
+              window.print();
+            };
+          </script>
+        </body>
+      </html>
+    `);
+    reportWindow.document.close();
+  }
+
+  if (booting) {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-slate-100 p-6">
+        <div className="w-full max-w-md rounded-[32px] border border-slate-200 bg-white p-8 shadow-xl">
+          <div className="mx-auto h-14 w-14 animate-pulse rounded-2xl bg-indigo-100" />
+          <h2 className="mt-6 text-center text-2xl font-black text-slate-900">Loading MTECH Stay</h2>
+          <p className="mt-2 text-center text-sm text-slate-500">Preparing your motel workspace...</p>
+        </div>
+      </main>
+    );
+  }
+
+  if (!user) {
+    return (
+      <main className="min-h-screen bg-[radial-gradient(circle_at_top_left,_#e0e7ff,_#f8fafc_42%,_#e2e8f0)] p-4 text-slate-900 sm:p-8">
+        <div className="mx-auto grid min-h-[calc(100vh-2rem)] max-w-6xl overflow-hidden rounded-[36px] border border-white/70 bg-white/80 shadow-2xl backdrop-blur lg:grid-cols-[1.1fr_0.9fr]">
+          <div className="hidden bg-gradient-to-br from-slate-950 via-indigo-950 to-slate-900 p-10 text-white lg:block">
+            <div className="max-w-xl">
+              <div className="inline-flex rounded-full border border-white/15 bg-white/5 px-4 py-2 text-xs font-semibold uppercase tracking-[0.25em] text-indigo-200">
+                Premium Motel Operations
+              </div>
+              <h1 className="mt-6 text-5xl font-black leading-tight">MTECH Stay</h1>
+              <p className="mt-5 text-lg text-slate-300">
+                Dashboard widgets, strong search, edit/delete, reports, and double-booking protection.
+              </p>
+
+              <div className="mt-10 grid gap-4">
+                <FeatureCard title="Today Widgets" text="See arrivals, departures, and balances due right on the dashboard." />
+                <FeatureCard title="Booking Protection" text="Stop overlapping room bookings before they are saved." />
+                <FeatureCard title="Front Desk Control" text="Run the motel faster with clearer live daily operations." />
+              </div>
+            </div>
+          </div>
+
+          <div className="flex items-center justify-center p-6 sm:p-10">
+            <div className="w-full max-w-md">
+              <div className="mb-8 lg:hidden">
+                <h1 className="text-4xl font-black tracking-tight text-slate-900">MTECH Stay</h1>
+                <p className="mt-2 text-slate-500">Premium motel operations system</p>
+              </div>
+
+              <div className="rounded-[32px] border border-slate-200 bg-white p-7 shadow-xl">
+                <div className="mb-6 flex rounded-2xl bg-slate-100 p-1">
+                  <button
+                    onClick={() => setAuthMode("login")}
+                    className={`flex-1 rounded-xl px-4 py-3 text-sm font-semibold ${
+                      authMode === "login" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500"
+                    }`}
+                  >
+                    Login
+                  </button>
+                  <button
+                    onClick={() => setAuthMode("signup")}
+                    className={`flex-1 rounded-xl px-4 py-3 text-sm font-semibold ${
+                      authMode === "signup" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500"
+                    }`}
+                  >
+                    Create Account
+                  </button>
+                </div>
+
+                {message && (
+                  <div
+                    className={`mb-5 rounded-2xl border px-4 py-3 text-sm font-medium ${
+                      messageType === "success"
+                        ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                        : messageType === "error"
+                        ? "border-rose-200 bg-rose-50 text-rose-700"
+                        : "border-sky-200 bg-sky-50 text-sky-700"
+                    }`}
+                  >
+                    {message}
+                  </div>
+                )}
+
+                <div className="space-y-4">
+                  {authMode === "signup" && (
+                    <InputField
+                      label="Full Name"
+                      value={authForm.full_name}
+                      onChange={(value) => setAuthForm((prev) => ({ ...prev, full_name: value }))}
+                      placeholder="Staff name"
+                    />
+                  )}
+
+                  <InputField
+                    label="Email"
+                    value={authForm.email}
+                    onChange={(value) => setAuthForm((prev) => ({ ...prev, email: value }))}
+                    placeholder="name@example.com"
+                    type="email"
+                  />
+
+                  <InputField
+                    label="Password"
+                    value={authForm.password}
+                    onChange={(value) => setAuthForm((prev) => ({ ...prev, password: value }))}
+                    placeholder="Enter password"
+                    type="password"
+                  />
+
+                  <button
+                    onClick={handleAuth}
+                    className="w-full rounded-2xl bg-slate-950 px-4 py-3 font-semibold text-white transition hover:bg-slate-800"
+                  >
+                    {busy ? "Please wait..." : authMode === "login" ? "Login to System" : "Create Staff Account"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </main>
+    );
+  }
+
+  if (loading) {
+    return (
+      <AppShell
+        title="Motel Management System"
+        subtitle="Connected to live Supabase data"
+        activeTab={activeTab}
+        setActiveTab={setActiveTab}
+        onSignOut={handleSignOut}
+        userEmail={user?.email || ""}
+      >
+        <div className="flex min-h-[60vh] items-center justify-center">
+          <div className="rounded-[28px] border border-slate-200 bg-white px-6 py-5 shadow-sm">
+            <p className="text-lg font-semibold text-slate-800">Loading motel system...</p>
+          </div>
+        </div>
+      </AppShell>
+    );
+  }
+
+  return (
+    <AppShell
+      title="Motel Management System"
+      subtitle="Dashboard widgets, search filters, edit/delete, reports, and booking protection"
+      activeTab={activeTab}
+      setActiveTab={setActiveTab}
+      onSignOut={handleSignOut}
+      userEmail={user?.email || ""}
+    >
+      {message && (
+        <div
+          className={`mb-6 rounded-2xl border px-4 py-3 text-sm font-medium ${
+            messageType === "success"
+              ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+              : messageType === "error"
+              ? "border-rose-200 bg-rose-50 text-rose-700"
+              : "border-sky-200 bg-sky-50 text-sky-700"
+          }`}
+        >
+          {message}
+        </div>
+      )}
+
+      {busy && (
+        <div className="mb-6 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-medium text-slate-700 shadow-sm">
+          Saving changes...
+        </div>
+      )}
+
+      {activeTab === "dashboard" && (
+        <section className="space-y-6">
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
+            <PremiumStatCard label="Total Rooms" value={dashboardStats.totalRooms} subtext="Live inventory" />
+            <PremiumStatCard label="Available" value={dashboardStats.availableRooms} subtext="Ready for guests" />
+            <PremiumStatCard label="Occupied" value={dashboardStats.occupiedRooms} subtext="Currently in use" />
+            <PremiumStatCard label="Reserved" value={dashboardStats.reservedRooms} subtext="Upcoming stays" />
+            <PremiumStatCard label="Guests" value={dashboardStats.totalGuests} subtext="Saved profiles" />
+            <PremiumStatCard label="Bookings" value={dashboardStats.totalBookings} subtext="Stay records" />
+            <PremiumStatCard label="Payments" value={dashboardStats.totalPayments} subtext="Transactions saved" />
+            <PremiumStatCard label="Cleaning" value={dashboardStats.cleaningRooms} subtext="Needs turnaround" />
+            <PremiumStatCard label="Maintenance" value={dashboardStats.maintenanceRooms} subtext="Unavailable units" />
+            <PremiumMoneyCard label="Revenue" value={dashboardStats.totalRevenue} subtext="Recorded cashflow" />
+          </div>
+
+          <div className="grid gap-4 lg:grid-cols-3">
+            <DailyWidget
+              title="Arrivals Today"
+              value={arrivalsToday.length}
+              subtitle="Guests expected today"
+            />
+            <DailyWidget
+              title="Departures Today"
+              value={departuresToday.length}
+              subtitle="Guests checking out today"
+            />
+            <DailyMoneyWidget
+              title="Balances Due"
+              value={dueToday.reduce((sum, item) => sum + Number(item.due || 0), 0)}
+              subtitle="Current unpaid balances"
+            />
+          </div>
+
+          <div className="grid gap-6 xl:grid-cols-3">
+            <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
+              <div className="mb-4">
+                <h3 className="text-xl font-black tracking-tight">Today Arrivals</h3>
+                <p className="text-sm text-slate-500">Guests expected to check in today</p>
+              </div>
+
+              <div className="space-y-3">
+                {arrivalsToday.length === 0 ? (
+                  <EmptyState title="No arrivals today" text="No guest is scheduled to arrive today." />
+                ) : (
+                  arrivalsToday.map((booking) => (
+                    <CompactBookingCard key={booking.id} booking={booking} />
+                  ))
+                )}
+              </div>
+            </section>
+
+            <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
+              <div className="mb-4">
+                <h3 className="text-xl font-black tracking-tight">Today Departures</h3>
+                <p className="text-sm text-slate-500">Guests expected to check out today</p>
+              </div>
+
+              <div className="space-y-3">
+                {departuresToday.length === 0 ? (
+                  <EmptyState title="No departures today" text="No guest is scheduled to depart today." />
+                ) : (
+                  departuresToday.map((booking) => (
+                    <CompactBookingCard key={booking.id} booking={booking} />
+                  ))
+                )}
+              </div>
+            </section>
+
+            <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
+              <div className="mb-4">
+                <h3 className="text-xl font-black tracking-tight">Balances Due</h3>
+                <p className="text-sm text-slate-500">Bookings with unpaid balances</p>
+              </div>
+
+              <div className="space-y-3">
+                {dueToday.length === 0 ? (
+                  <EmptyState title="No balances due" text="No current booking has an unpaid balance." />
+                ) : (
+                  dueToday.slice(0, 8).map((booking) => (
+                    <div
+                      key={booking.id}
+                      className="rounded-[22px] border border-slate-200 bg-slate-50 p-4"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="font-black">{booking.guest_name}</p>
+                          <p className="text-sm text-slate-500">
+                            Room {booking.room_number || "-"}
+                          </p>
+                        </div>
+                        <p className="text-sm font-black text-rose-700">{formatK(booking.due)}</p>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </section>
+          </div>
+
+          <div className="grid gap-6 xl:grid-cols-2">
+            <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
+              <div className="mb-4 flex items-center justify-between gap-3">
+                <div>
+                  <h3 className="text-xl font-black tracking-tight">Rooms Overview</h3>
+                  <p className="text-sm text-slate-500">Current room availability and rates</p>
+                </div>
+                <button
+                  onClick={() => loadAllData()}
+                  className="rounded-2xl border border-slate-200 px-3 py-2 text-sm font-semibold hover:bg-slate-50"
+                >
+                  Refresh
+                </button>
+              </div>
+
+              <div className="grid gap-3 sm:grid-cols-2">
+                {rooms.map((room) => (
+                  <div
+                    key={room.id}
+                    className="rounded-[24px] border border-slate-200 bg-gradient-to-br from-white to-slate-50 p-4 shadow-sm"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="text-lg font-black">{room.room_number}</p>
+                        <p className="text-sm text-slate-500">{room.room_type}</p>
+                      </div>
+                      <span className={`rounded-full border px-3 py-1 text-xs font-semibold ${roomStatusStyles[room.status]}`}>
+                        {room.status}
+                      </span>
+                    </div>
+                    <p className="mt-3 text-sm font-medium text-slate-700">
+                      {formatK(room.price)} / {room.billing_type}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            </section>
+
+            <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
+              <div className="mb-4">
+                <h3 className="text-xl font-black tracking-tight">Recent Bookings</h3>
+                <p className="text-sm text-slate-500">Latest activity from the front desk</p>
+              </div>
+
+              <div className="space-y-3">
+                {bookingViews.length === 0 ? (
+                  <EmptyState title="No bookings yet" text="Create your first booking to see activity here." />
+                ) : (
+                  bookingViews.slice(0, 8).map((booking) => (
+                    <div
+                      key={booking.id}
+                      className="rounded-[24px] border border-slate-200 bg-gradient-to-br from-white to-slate-50 p-4"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="font-bold">{booking.guest_name}</p>
+                          <p className="text-sm text-slate-500">
+                            {booking.room_number || "-"} • {booking.room?.room_type || "Room"}
+                          </p>
+                        </div>
+                        <span className={`rounded-full border px-3 py-1 text-xs font-semibold ${bookingStatusStyles[booking.status]}`}>
+                          {booking.status}
+                        </span>
+                      </div>
+                      <div className="mt-3 text-sm text-slate-700">
+                        <p>Total: {formatK(booking.total_amount)}</p>
+                        <p>Paid: {formatK(booking.paid)}</p>
+                        <p>Due: {formatK(booking.due)}</p>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </section>
+          </div>
+        </section>
+      )}
+
+      {activeTab === "rooms" && (
+        <section className="grid gap-6 xl:grid-cols-[380px_1fr]">
+          <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="mb-4 flex items-center justify-between gap-3">
+              <div>
+                <h3 className="text-xl font-black tracking-tight">{editingRoomId ? "Edit Room" : "Add Room"}</h3>
+                <p className="text-sm text-slate-500">
+                  {editingRoomId ? "Update room details and save changes" : "Create more room inventory when needed"}
+                </p>
+              </div>
+              {editingRoomId && (
+                <button
+                  onClick={resetRoomForm}
+                  className="rounded-2xl border border-slate-200 px-3 py-2 text-sm font-semibold hover:bg-slate-50"
+                >
+                  Cancel Edit
+                </button>
+              )}
+            </div>
+
+            <div className="space-y-4">
+              <InputField
+                label="Room Number"
+                value={roomForm.room_number}
+                onChange={(value) => setRoomForm((prev) => ({ ...prev, room_number: value }))}
+                placeholder="Example: A7"
+              />
+
+              <SelectField
+                label="Room Type"
+                value={roomForm.room_type}
+                onChange={(value) => setRoomForm((prev) => ({ ...prev, room_type: value }))}
+                options={["Apartment", "Single Room", "Deluxe Room", "Commercial Unit"]}
+              />
+
+              <InputField
+                label="Price"
+                type="number"
+                value={String(roomForm.price)}
+                onChange={(value) => setRoomForm((prev) => ({ ...prev, price: Number(value) || 0 }))}
+              />
+
+              <SelectField
+                label="Billing Type"
+                value={roomForm.billing_type}
+                onChange={(value) => setRoomForm((prev) => ({ ...prev, billing_type: value as BillingType }))}
+                options={["Night", "Month"]}
+              />
+
+              <SelectField
+                label="Status"
+                value={roomForm.status}
+                onChange={(value) => setRoomForm((prev) => ({ ...prev, status: value as RoomStatus }))}
+                options={["Available", "Occupied", "Reserved", "Cleaning", "Maintenance"]}
+              />
+
+              <TextAreaField
+                label="Notes"
+                value={roomForm.notes}
+                onChange={(value) => setRoomForm((prev) => ({ ...prev, notes: value }))}
+                placeholder="Optional notes"
+              />
+
+              <button
+                onClick={saveRoom}
+                className="w-full rounded-2xl bg-slate-950 px-4 py-3 font-semibold text-white transition hover:bg-slate-800"
+              >
+                {editingRoomId ? "Update Room" : "Save Room"}
+              </button>
+            </div>
+          </section>
+
+          <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="mb-4 flex flex-col gap-4">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <h3 className="text-xl font-black tracking-tight">Room List</h3>
+                  <p className="text-sm text-slate-500">Search and filter live room status and pricing</p>
+                </div>
+                <button
+                  onClick={() => loadAllData()}
+                  className="rounded-2xl border border-slate-200 px-3 py-2 text-sm font-semibold hover:bg-slate-50"
+                >
+                  Refresh
+                </button>
+              </div>
+
+              <div className="grid gap-3 md:grid-cols-3">
+                <InputField
+                  label="Search Rooms"
+                  value={roomSearch}
+                  onChange={setRoomSearch}
+                  placeholder="Room number, type, note"
+                />
+                <SelectField
+                  label="Status Filter"
+                  value={roomStatusFilter}
+                  onChange={setRoomStatusFilter}
+                  options={["All", "Available", "Occupied", "Reserved", "Cleaning", "Maintenance"]}
+                />
+                <div className="flex items-end">
+                  <button
+                    onClick={clearRoomFilters}
+                    className="w-full rounded-2xl border border-slate-200 px-4 py-3 text-sm font-semibold hover:bg-slate-50"
+                  >
+                    Clear Filters
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div className="mb-4 text-sm text-slate-500">
+              Showing {filteredRooms.length} of {rooms.length} room(s)
+            </div>
+
+            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+              {filteredRooms.map((room) => (
+                <div
+                  key={room.id}
+                  className="rounded-[28px] border border-slate-200 bg-gradient-to-br from-white to-slate-50 p-4 shadow-sm"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="text-lg font-black">{room.room_number}</p>
+                      <p className="text-sm text-slate-500">{room.room_type}</p>
+                    </div>
+                    <span className={`rounded-full border px-3 py-1 text-xs font-semibold ${roomStatusStyles[room.status]}`}>
+                      {room.status}
+                    </span>
+                  </div>
+
+                  <div className="mt-3 space-y-1 text-sm text-slate-700">
+                    <p>Rate: {formatK(room.price)} / {room.billing_type}</p>
+                    <p>Notes: {room.notes || "No notes"}</p>
+                  </div>
+
+                  <div className="mt-4">
+                    <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">
+                      Quick Status Change
+                    </label>
+                    <select
+                      value={room.status}
+                      onChange={(e) => updateRoomStatus(room.id, e.target.value as RoomStatus)}
+                      className="w-full rounded-2xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-indigo-400"
+                    >
+                      {["Available", "Occupied", "Reserved", "Cleaning", "Maintenance"].map((status) => (
+                        <option key={status} value={status}>
+                          {status}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="mt-4 grid grid-cols-2 gap-2">
+                    <button
+                      onClick={() => startEditRoom(room)}
+                      className="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold hover:bg-slate-50"
+                    >
+                      Edit
+                    </button>
+                    <button
+                      onClick={() => deleteRoom(room.id)}
+                      className="rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-700 hover:bg-rose-100"
+                    >
+                      Delete
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {filteredRooms.length === 0 && (
+              <div className="mt-4">
+                <EmptyState title="No rooms found" text="Try a different room search or status filter." />
+              </div>
+            )}
+          </section>
+        </section>
+      )}
+
+      {activeTab === "bookings" && (
+        <section className="grid gap-6 xl:grid-cols-[430px_1fr]">
+          <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="mb-4 flex items-center justify-between gap-3">
+              <div>
+                <h3 className="text-xl font-black tracking-tight">{editingBookingId ? "Edit Booking" : "Create Booking"}</h3>
+                <p className="text-sm text-slate-500">
+                  {editingBookingId ? "Update stay details and save changes" : "Register a new stay and optional deposit"}
+                </p>
+              </div>
+              {editingBookingId && (
+                <button
+                  onClick={resetBookingForm}
+                  className="rounded-2xl border border-slate-200 px-3 py-2 text-sm font-semibold hover:bg-slate-50"
+                >
+                  Cancel Edit
+                </button>
+              )}
+            </div>
+
+            <div className="space-y-4">
+              <InputField
+                label="Guest Name"
+                value={bookingForm.guest_name}
+                onChange={(value) => setBookingForm((prev) => ({ ...prev, guest_name: value }))}
+                placeholder="Enter guest name"
+              />
+
+              <InputField
+                label="Phone"
+                value={bookingForm.phone}
+                onChange={(value) => setBookingForm((prev) => ({ ...prev, phone: value }))}
+                placeholder="Phone number"
+              />
+
+              <div>
+                <label className="mb-1 block text-sm font-medium text-slate-700">Select Room</label>
+                <select
+                  value={bookingForm.room_id}
+                  onChange={(e) => setBookingForm((prev) => ({ ...prev, room_id: Number(e.target.value) }))}
+                  className="w-full rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:border-indigo-400"
+                >
+                  <option value={0}>Select room</option>
+                  {availableRooms.map((room) => (
+                    <option key={room.id} value={room.id}>
+                      {room.room_number} - {room.room_type} - {formatK(room.price)}/{room.billing_type}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <InputField
+                label="Check-In Date"
+                type="date"
+                value={bookingForm.check_in_date}
+                onChange={(value) => setBookingForm((prev) => ({ ...prev, check_in_date: value }))}
+              />
+
+              <InputField
+                label="Check-Out Date"
+                type="date"
+                value={bookingForm.check_out_date}
+                onChange={(value) => setBookingForm((prev) => ({ ...prev, check_out_date: value }))}
+              />
+
+              {!editingBookingId && (
+                <>
+                  <InputField
+                    label="Deposit"
+                    type="number"
+                    value={String(bookingForm.deposit)}
+                    onChange={(value) => setBookingForm((prev) => ({ ...prev, deposit: Number(value) || 0 }))}
+                  />
+
+                  <SelectField
+                    label="Deposit Method"
+                    value={bookingForm.deposit_method}
+                    onChange={(value) => setBookingForm((prev) => ({ ...prev, deposit_method: value }))}
+                    options={["Cash", "Card", "Bank Transfer", "Mobile Transfer"]}
+                  />
+                </>
+              )}
+
+              <SelectField
+                label="Booking Status"
+                value={bookingForm.status}
+                onChange={(value) => setBookingForm((prev) => ({ ...prev, status: value as BookingStatus }))}
+                options={["Reserved", "Checked In", "Checked Out", "Cancelled"]}
+              />
+
+              <TextAreaField
+                label="Notes"
+                value={bookingForm.notes}
+                onChange={(value) => setBookingForm((prev) => ({ ...prev, notes: value }))}
+                placeholder="Optional notes"
+              />
+
+              {currentConflict && (
+                <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-medium text-rose-700">
+                  Room conflict: {selectedRoom?.room_number} already overlaps with {currentConflict.guest_name} from {currentConflict.check_in_date} to {currentConflict.check_out_date}.
+                </div>
+              )}
+
+              <div className="rounded-[24px] border border-slate-200 bg-gradient-to-br from-indigo-50 to-white p-4">
+                <h4 className="mb-3 font-black text-slate-900">Booking Summary</h4>
+                <div className="space-y-2 text-sm text-slate-700">
+                  <p>Room: {selectedRoom ? `${selectedRoom.room_number} (${selectedRoom.room_type})` : "-"}</p>
+                  <p>Billing: {selectedRoom?.billing_type || "-"}</p>
+                  <p>Rate: {formatK(bookingRate)}</p>
+                  <p>
+                    Duration: {bookingDuration}{" "}
+                    {selectedRoom?.billing_type === "Month" ? "month(s)" : "night(s)"}
+                  </p>
+                  <p>Total: {formatK(bookingTotal)}</p>
+                  {!editingBookingId && <p>Deposit: {formatK(bookingForm.deposit)}</p>}
+                  <p className="font-bold">
+                    Balance: {formatK(editingBookingId ? bookingTotal : bookingBalance)}
+                  </p>
+                </div>
+              </div>
+
+              <button
+                onClick={saveBooking}
+                className="w-full rounded-2xl bg-slate-950 px-4 py-3 font-semibold text-white transition hover:bg-slate-800"
+              >
+                {editingBookingId ? "Update Booking" : "Save Booking"}
+              </button>
+            </div>
+          </section>
+
+          <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="mb-4 flex flex-col gap-4">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <h3 className="text-xl font-black tracking-tight">Bookings List</h3>
+                  <p className="text-sm text-slate-500">Search stays by guest, room, status, or date</p>
+                </div>
+                <button
+                  onClick={() => loadAllData()}
+                  className="rounded-2xl border border-slate-200 px-3 py-2 text-sm font-semibold hover:bg-slate-50"
+                >
+                  Refresh
+                </button>
+              </div>
+
+              <div className="grid gap-3 md:grid-cols-4">
+                <InputField
+                  label="Search Bookings"
+                  value={bookingSearch}
+                  onChange={setBookingSearch}
+                  placeholder="Guest, phone, room"
+                />
+                <SelectField
+                  label="Status Filter"
+                  value={bookingStatusFilter}
+                  onChange={setBookingStatusFilter}
+                  options={["All", "Reserved", "Checked In", "Checked Out", "Cancelled"]}
+                />
+                <InputField
+                  label="Date Filter"
+                  type="date"
+                  value={bookingDateFilter}
+                  onChange={setBookingDateFilter}
+                />
+                <div className="flex items-end">
+                  <button
+                    onClick={clearBookingFilters}
+                    className="w-full rounded-2xl border border-slate-200 px-4 py-3 text-sm font-semibold hover:bg-slate-50"
+                  >
+                    Clear Filters
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div className="mb-4 text-sm text-slate-500">
+              Showing {filteredBookings.length} of {bookingViews.length} booking(s)
+            </div>
+
+            <div className="space-y-4">
+              {filteredBookings.length === 0 ? (
+                <EmptyState title="No bookings found" text="Try a different booking search, status, or date." />
+              ) : (
+                filteredBookings.map((booking) => (
+                  <div
+                    key={booking.id}
+                    className="rounded-[28px] border border-slate-200 bg-gradient-to-br from-white to-slate-50 p-4"
+                  >
+                    <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
+                      <div>
+                        <h4 className="text-lg font-black">{booking.guest_name}</h4>
+                        <p className="text-sm text-slate-500">
+                          {booking.room_number || "-"} • {booking.room?.room_type || "Room"}
+                        </p>
+                      </div>
+
+                      <div className="flex flex-wrap gap-2">
+                        <span className={`rounded-full border px-3 py-1 text-xs font-semibold ${bookingStatusStyles[booking.status]}`}>
+                          {booking.status}
+                        </span>
+                        <button
+                          onClick={() => printReceipt(booking.id)}
+                          className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                        >
+                          Print Receipt
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="mt-4 grid gap-2 text-sm text-slate-700 sm:grid-cols-2 xl:grid-cols-4">
+                      <p>Phone: {booking.phone || "-"}</p>
+                      <p>Check-In: {booking.check_in_date}</p>
+                      <p>Check-Out: {booking.check_out_date}</p>
+                      <p>Total: {formatK(booking.total_amount)}</p>
+                      <p>Paid: {formatK(booking.paid)}</p>
+                      <p>Due: {formatK(booking.due)}</p>
+                      <p>Room Rate: {formatK(booking.room?.price || 0)}</p>
+                      <p>Billing: {booking.room?.billing_type || "-"}</p>
+                    </div>
+
+                    <div className="mt-4">
+                      <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">
+                        Quick Booking Status
+                      </label>
+                      <select
+                        value={booking.status}
+                        onChange={(e) =>
+                          changeBookingStatus(
+                            booking.id,
+                            booking.room_id,
+                            e.target.value as BookingStatus
+                          )
+                        }
+                        className="w-full rounded-2xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-indigo-400"
+                      >
+                        {["Reserved", "Checked In", "Checked Out", "Cancelled"].map((status) => (
+                          <option key={status} value={status}>
+                            {status}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div className="mt-4 grid grid-cols-2 gap-2">
+                      <button
+                        onClick={() => startEditBooking(booking)}
+                        className="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold hover:bg-slate-50"
+                      >
+                        Edit
+                      </button>
+                      <button
+                        onClick={() => deleteBooking(booking.id, booking.room_id)}
+                        className="rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-700 hover:bg-rose-100"
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </section>
+        </section>
+      )}
+
+      {activeTab === "guests" && (
+        <section className="grid gap-6 xl:grid-cols-[380px_1fr]">
+          <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="mb-4 flex items-center justify-between gap-3">
+              <div>
+                <h3 className="text-xl font-black tracking-tight">{editingGuestId ? "Edit Guest" : "Add Guest"}</h3>
+                <p className="text-sm text-slate-500">
+                  {editingGuestId ? "Update guest details and save changes" : "Store guest details for faster repeat stays"}
+                </p>
+              </div>
+              {editingGuestId && (
+                <button
+                  onClick={resetGuestForm}
+                  className="rounded-2xl border border-slate-200 px-3 py-2 text-sm font-semibold hover:bg-slate-50"
+                >
+                  Cancel Edit
+                </button>
+              )}
+            </div>
+
+            <div className="space-y-4">
+              <InputField
+                label="Full Name"
+                value={guestForm.full_name}
+                onChange={(value) => setGuestForm((prev) => ({ ...prev, full_name: value }))}
+                placeholder="Guest name"
+              />
+
+              <InputField
+                label="Phone"
+                value={guestForm.phone}
+                onChange={(value) => setGuestForm((prev) => ({ ...prev, phone: value }))}
+                placeholder="Phone number"
+              />
+
+              <InputField
+                label="Email"
+                value={guestForm.email}
+                onChange={(value) => setGuestForm((prev) => ({ ...prev, email: value }))}
+                placeholder="Optional"
+              />
+
+              <InputField
+                label="ID Number"
+                value={guestForm.id_number}
+                onChange={(value) => setGuestForm((prev) => ({ ...prev, id_number: value }))}
+                placeholder="Optional"
+              />
+
+              <InputField
+                label="Address"
+                value={guestForm.address}
+                onChange={(value) => setGuestForm((prev) => ({ ...prev, address: value }))}
+                placeholder="Optional"
+              />
+
+              <TextAreaField
+                label="Notes"
+                value={guestForm.notes}
+                onChange={(value) => setGuestForm((prev) => ({ ...prev, notes: value }))}
+                placeholder="Optional notes"
+              />
+
+              <button
+                onClick={saveGuest}
+                className="w-full rounded-2xl bg-slate-950 px-4 py-3 font-semibold text-white transition hover:bg-slate-800"
+              >
+                {editingGuestId ? "Update Guest" : "Save Guest"}
+              </button>
+            </div>
+          </section>
+
+          <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="mb-4 flex flex-col gap-4">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <h3 className="text-xl font-black tracking-tight">Guest List</h3>
+                  <p className="text-sm text-slate-500">Search guests by name, phone, email, ID, or address</p>
+                </div>
+                <button
+                  onClick={() => loadAllData()}
+                  className="rounded-2xl border border-slate-200 px-3 py-2 text-sm font-semibold hover:bg-slate-50"
+                >
+                  Refresh
+                </button>
+              </div>
+
+              <div className="grid gap-3 md:grid-cols-[1fr_180px]">
+                <InputField
+                  label="Search Guests"
+                  value={guestSearch}
+                  onChange={setGuestSearch}
+                  placeholder="Name, phone, email, ID"
+                />
+                <div className="flex items-end">
+                  <button
+                    onClick={clearGuestFilters}
+                    className="w-full rounded-2xl border border-slate-200 px-4 py-3 text-sm font-semibold hover:bg-slate-50"
+                  >
+                    Clear Search
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div className="mb-4 text-sm text-slate-500">
+              Showing {filteredGuests.length} of {guests.length} guest(s)
+            </div>
+
+            <div className="space-y-4">
+              {filteredGuests.length === 0 ? (
+                <EmptyState title="No guests found" text="Try a different guest search term." />
+              ) : (
+                filteredGuests.map((guest) => (
+                  <div
+                    key={guest.id}
+                    className="rounded-[28px] border border-slate-200 bg-gradient-to-br from-white to-slate-50 p-4"
+                  >
+                    <h4 className="text-lg font-black">{guest.full_name}</h4>
+                    <div className="mt-2 grid gap-2 text-sm text-slate-700 sm:grid-cols-2">
+                      <p>Phone: {guest.phone || "-"}</p>
+                      <p>Email: {guest.email || "-"}</p>
+                      <p>ID: {guest.id_number || "-"}</p>
+                      <p>Address: {guest.address || "-"}</p>
+                    </div>
+                    {guest.notes && <p className="mt-3 text-sm text-slate-600">Notes: {guest.notes}</p>}
+
+                    <div className="mt-4 grid grid-cols-2 gap-2">
+                      <button
+                        onClick={() => startEditGuest(guest)}
+                        className="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold hover:bg-slate-50"
+                      >
+                        Edit
+                      </button>
+                      <button
+                        onClick={() => deleteGuest(guest.id)}
+                        className="rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-700 hover:bg-rose-100"
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </section>
+        </section>
+      )}
+
+      {activeTab === "payments" && (
+        <section className="grid gap-6 xl:grid-cols-[380px_1fr]">
+          <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="mb-4 flex items-center justify-between gap-3">
+              <div>
+                <h3 className="text-xl font-black tracking-tight">{editingPaymentId ? "Edit Payment" : "Record Payment"}</h3>
+                <p className="text-sm text-slate-500">
+                  {editingPaymentId ? "Update payment details and save changes" : "Add payment against any active booking"}
+                </p>
+              </div>
+              {editingPaymentId && (
+                <button
+                  onClick={resetPaymentForm}
+                  className="rounded-2xl border border-slate-200 px-3 py-2 text-sm font-semibold hover:bg-slate-50"
+                >
+                  Cancel Edit
+                </button>
+              )}
+            </div>
+
+            <div className="space-y-4">
+              <div>
+                <label className="mb-1 block text-sm font-medium text-slate-700">Select Booking</label>
+                <select
+                  value={paymentForm.booking_id}
+                  onChange={(e) => setPaymentForm((prev) => ({ ...prev, booking_id: Number(e.target.value) }))}
+                  className="w-full rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:border-indigo-400"
+                >
+                  <option value={0}>Select booking</option>
+                  {bookingViews.map((booking) => (
+                    <option key={booking.id} value={booking.id}>
+                      {booking.guest_name} - {booking.room_number || "-"} - Due {formatK(booking.due)}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <InputField
+                label="Amount"
+                type="number"
+                value={String(paymentForm.amount)}
+                onChange={(value) => setPaymentForm((prev) => ({ ...prev, amount: Number(value) || 0 }))}
+              />
+
+              <SelectField
+                label="Payment Method"
+                value={paymentForm.payment_method}
+                onChange={(value) => setPaymentForm((prev) => ({ ...prev, payment_method: value }))}
+                options={["Cash", "Card", "Bank Transfer", "Mobile Transfer"]}
+              />
+
+              <InputField
+                label="Payment Date"
+                type="date"
+                value={paymentForm.payment_date}
+                onChange={(value) => setPaymentForm((prev) => ({ ...prev, payment_date: value }))}
+              />
+
+              <button
+                onClick={savePayment}
+                className="w-full rounded-2xl bg-slate-950 px-4 py-3 font-semibold text-white transition hover:bg-slate-800"
+              >
+                {editingPaymentId ? "Update Payment" : "Save Payment"}
+              </button>
+            </div>
+          </section>
+
+          <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="mb-4 flex flex-col gap-4">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <h3 className="text-xl font-black tracking-tight">Payment History</h3>
+                  <p className="text-sm text-slate-500">Search payments by guest, room, method, or date</p>
+                </div>
+                <button
+                  onClick={() => loadAllData()}
+                  className="rounded-2xl border border-slate-200 px-3 py-2 text-sm font-semibold hover:bg-slate-50"
+                >
+                  Refresh
+                </button>
+              </div>
+
+              <div className="grid gap-3 md:grid-cols-4">
+                <InputField
+                  label="Search Payments"
+                  value={paymentSearch}
+                  onChange={setPaymentSearch}
+                  placeholder="Guest, room, method"
+                />
+                <SelectField
+                  label="Method Filter"
+                  value={paymentMethodFilter}
+                  onChange={setPaymentMethodFilter}
+                  options={["All", "Cash", "Card", "Bank Transfer", "Mobile Transfer"]}
+                />
+                <InputField
+                  label="Payment Date"
+                  type="date"
+                  value={paymentDateFilter}
+                  onChange={setPaymentDateFilter}
+                />
+                <div className="flex items-end">
+                  <button
+                    onClick={clearPaymentFilters}
+                    className="w-full rounded-2xl border border-slate-200 px-4 py-3 text-sm font-semibold hover:bg-slate-50"
+                  >
+                    Clear Filters
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div className="mb-4 text-sm text-slate-500">
+              Showing {filteredPayments.length} of {payments.length} payment(s)
+            </div>
+
+            <div className="space-y-4">
+              {filteredPayments.length === 0 ? (
+                <EmptyState title="No payments found" text="Try a different payment search, method, or date." />
+              ) : (
+                filteredPayments.map((payment) => {
+                  const booking = bookingViews.find((item) => item.id === payment.booking_id);
+
+                  return (
+                    <div
+                      key={payment.id}
+                      className="rounded-[28px] border border-slate-200 bg-gradient-to-br from-white to-slate-50 p-4"
+                    >
+                      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                        <div>
+                          <h4 className="font-black">{booking?.guest_name || "Guest"}</h4>
+                          <p className="text-sm text-slate-500">Room {booking?.room_number || "-"}</p>
+                        </div>
+                        <p className="text-lg font-black">{formatK(payment.amount)}</p>
+                      </div>
+
+                      <div className="mt-3 grid gap-2 text-sm text-slate-700 sm:grid-cols-2">
+                        <p>Method: {payment.payment_method || "-"}</p>
+                        <p>Date: {payment.payment_date || "-"}</p>
+                        <p>Booking Ref: {payment.booking_id}</p>
+                        <p>Remaining Due: {formatK(booking?.due || 0)}</p>
+                      </div>
+
+                      <div className="mt-4 grid grid-cols-3 gap-2">
+                        <button
+                          onClick={() => booking && printReceipt(booking.id)}
+                          className="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold hover:bg-slate-50"
+                        >
+                          Print
+                        </button>
+                        <button
+                          onClick={() => startEditPayment(payment)}
+                          className="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold hover:bg-slate-50"
+                        >
+                          Edit
+                        </button>
+                        <button
+                          onClick={() => deletePayment(payment.id, payment.booking_id)}
+                          className="rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-700 hover:bg-rose-100"
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </section>
+        </section>
+      )}
+
+      {activeTab === "reports" && (
+        <section className="space-y-6">
+          <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
+              <div>
+                <h3 className="text-xl font-black tracking-tight">Reports Center</h3>
+                <p className="text-sm text-slate-500">Track revenue, payments, occupancy, and outstanding balances</p>
+              </div>
+
+              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                <InputField
+                  label="Start Date"
+                  type="date"
+                  value={reportStartDate}
+                  onChange={setReportStartDate}
+                />
+                <InputField
+                  label="End Date"
+                  type="date"
+                  value={reportEndDate}
+                  onChange={setReportEndDate}
+                />
+                <button
+                  onClick={() => {
+                    setReportStartDate(firstDayOfMonth());
+                    setReportEndDate(todayDate());
+                  }}
+                  className="rounded-2xl border border-slate-200 px-4 py-3 text-sm font-semibold hover:bg-slate-50"
+                >
+                  This Month
+                </button>
+                <button
+                  onClick={printReport}
+                  className="rounded-2xl bg-slate-950 px-4 py-3 text-sm font-semibold text-white transition hover:bg-slate-800"
+                >
+                  Print Report
+                </button>
+              </div>
+            </div>
+          </section>
+
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
+            <PremiumMoneyCard label="Revenue" value={reportStats.revenue} subtext="Selected range" />
+            <PremiumStatCard label="Payments" value={reportStats.totalPayments} subtext="Transactions" />
+            <PremiumStatCard label="Bookings" value={reportStats.totalBookings} subtext="Within range" />
+            <PremiumStatCard label="Checked In" value={reportStats.checkedIn} subtext="Live occupied stays" />
+            <PremiumMoneyCard label="Outstanding" value={reportStats.totalOutstanding} subtext="All unpaid balances" />
+          </div>
+
+          <div className="grid gap-6 xl:grid-cols-2">
+            <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
+              <div className="mb-4">
+                <h3 className="text-xl font-black tracking-tight">Room Status Summary</h3>
+                <p className="text-sm text-slate-500">Current live room operations</p>
+              </div>
+
+              <div className="grid gap-4 sm:grid-cols-2">
+                <MiniReportCard label="Available Rooms" value={reportStats.availableRooms} />
+                <MiniReportCard label="Occupied Rooms" value={reportStats.occupiedRooms} />
+                <MiniReportCard label="Cleaning Rooms" value={reportStats.cleaningRooms} />
+                <MiniReportCard label="Maintenance Rooms" value={reportStats.maintenanceRooms} />
+                <MiniReportCard label="Reserved in Range" value={reportStats.reservedInRange} />
+                <MiniReportCard label="Checked Out in Range" value={reportStats.checkedOutInRange} />
+              </div>
+            </section>
+
+            <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
+              <div className="mb-4">
+                <h3 className="text-xl font-black tracking-tight">Payment Method Summary</h3>
+                <p className="text-sm text-slate-500">Revenue grouped by collection method</p>
+              </div>
+
+              <div className="space-y-3">
+                {Object.keys(reportStats.paymentMethodTotals).length === 0 ? (
+                  <EmptyState title="No payments in range" text="Try a different date range to view payment totals." />
+                ) : (
+                  Object.entries(reportStats.paymentMethodTotals).map(([method, total]) => (
+                    <div
+                      key={method}
+                      className="flex items-center justify-between rounded-[22px] border border-slate-200 bg-slate-50 px-4 py-3"
+                    >
+                      <div>
+                        <p className="font-semibold text-slate-800">{method}</p>
+                        <p className="text-xs uppercase tracking-[0.2em] text-slate-400">Payment method</p>
+                      </div>
+                      <p className="text-lg font-black text-slate-900">{formatK(total)}</p>
+                    </div>
+                  ))
+                )}
+              </div>
+            </section>
+          </div>
+
+          <div className="grid gap-6 xl:grid-cols-2">
+            <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
+              <div className="mb-4">
+                <h3 className="text-xl font-black tracking-tight">Outstanding Balances</h3>
+                <p className="text-sm text-slate-500">Bookings that still have money due</p>
+              </div>
+
+              <div className="space-y-3">
+                {reportStats.outstandingBookings.length === 0 ? (
+                  <EmptyState title="No outstanding balances" text="All current bookings are fully paid." />
+                ) : (
+                  reportStats.outstandingBookings.map((booking) => (
+                    <div
+                      key={booking.id}
+                      className="rounded-[24px] border border-slate-200 bg-gradient-to-br from-white to-slate-50 p-4"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="font-black">{booking.guest_name}</p>
+                          <p className="text-sm text-slate-500">
+                            Room {booking.room_number || "-"} • {booking.check_in_date} to {booking.check_out_date}
+                          </p>
+                        </div>
+                        <span className={`rounded-full border px-3 py-1 text-xs font-semibold ${bookingStatusStyles[booking.status]}`}>
+                          {booking.status}
+                        </span>
+                      </div>
+
+                      <div className="mt-3 grid gap-2 text-sm text-slate-700 sm:grid-cols-3">
+                        <p>Total: {formatK(booking.total_amount)}</p>
+                        <p>Paid: {formatK(booking.paid)}</p>
+                        <p className="font-bold">Due: {formatK(booking.due)}</p>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </section>
+
+            <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
+              <div className="mb-4">
+                <h3 className="text-xl font-black tracking-tight">Recent Payments in Range</h3>
+                <p className="text-sm text-slate-500">Latest collected payments for selected dates</p>
+              </div>
+
+              <div className="space-y-3">
+                {reportPayments.length === 0 ? (
+                  <EmptyState title="No payments found" text="No payment was recorded for the selected date range." />
+                ) : (
+                  reportPayments.slice(0, 12).map((payment) => {
+                    const booking = bookingViews.find((item) => item.id === payment.booking_id);
+                    return (
+                      <div
+                        key={payment.id}
+                        className="flex items-center justify-between rounded-[22px] border border-slate-200 bg-slate-50 px-4 py-3"
+                      >
+                        <div>
+                          <p className="font-semibold text-slate-800">{booking?.guest_name || "Guest"}</p>
+                          <p className="text-sm text-slate-500">
+                            {payment.payment_date || "-"} • {payment.payment_method || "Unknown"}
+                          </p>
+                        </div>
+                        <p className="text-lg font-black text-slate-900">{formatK(payment.amount)}</p>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </section>
+          </div>
+        </section>
+      )}
+    </AppShell>
+  );
+}
+
+function SidebarButton({
+  label,
+  active,
+  onClick,
+}: {
+  label: string;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`w-full rounded-2xl px-4 py-3 text-left text-sm font-semibold transition ${
+        active
+          ? "bg-white text-slate-900 shadow-sm"
+          : "text-slate-300 hover:bg-white/10 hover:text-white"
+      }`}
+    >
+      {label}
+    </button>
+  );
+}
+
+function MobileTabButton({
+  label,
+  active,
+  onClick,
+}: {
+  label: string;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`rounded-xl px-3 py-2 text-sm font-medium ${
+        active ? "bg-slate-950 text-white" : "bg-slate-100 text-slate-700"
+      }`}
+    >
+      {label}
+    </button>
+  );
+}
+
+function PremiumStatCard({
+  label,
+  value,
+  subtext,
+}: {
+  label: string;
+  value: number;
+  subtext: string;
+}) {
+  return (
+    <div className="rounded-[28px] border border-slate-200 bg-gradient-to-br from-white to-slate-50 p-5 shadow-sm">
+      <p className="text-sm font-medium text-slate-500">{label}</p>
+      <p className="mt-2 text-3xl font-black tracking-tight">{value}</p>
+      <p className="mt-2 text-xs uppercase tracking-[0.2em] text-slate-400">{subtext}</p>
+    </div>
+  );
+}
+
+function PremiumMoneyCard({
+  label,
+  value,
+  subtext,
+}: {
+  label: string;
+  value: number;
+  subtext: string;
+}) {
+  return (
+    <div className="rounded-[28px] border border-indigo-200 bg-gradient-to-br from-indigo-50 to-white p-5 shadow-sm">
+      <p className="text-sm font-medium text-slate-500">{label}</p>
+      <p className="mt-2 text-3xl font-black tracking-tight">{formatK(value)}</p>
+      <p className="mt-2 text-xs uppercase tracking-[0.2em] text-slate-400">{subtext}</p>
+    </div>
+  );
+}
+
+function MiniReportCard({
+  label,
+  value,
+}: {
+  label: string;
+  value: number;
+}) {
+  return (
+    <div className="rounded-[24px] border border-slate-200 bg-slate-50 p-4">
+      <p className="text-sm font-medium text-slate-500">{label}</p>
+      <p className="mt-2 text-2xl font-black tracking-tight text-slate-900">{value}</p>
+    </div>
+  );
+}
+
+function DailyWidget({
+  title,
+  value,
+  subtitle,
+}: {
+  title: string;
+  value: number;
+  subtitle: string;
+}) {
+  return (
+    <div className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
+      <p className="text-sm font-medium text-slate-500">{title}</p>
+      <p className="mt-2 text-3xl font-black tracking-tight">{value}</p>
+      <p className="mt-2 text-xs uppercase tracking-[0.2em] text-slate-400">{subtitle}</p>
+    </div>
+  );
+}
+
+function DailyMoneyWidget({
+  title,
+  value,
+  subtitle,
+}: {
+  title: string;
+  value: number;
+  subtitle: string;
+}) {
+  return (
+    <div className="rounded-[28px] border border-rose-200 bg-rose-50 p-5 shadow-sm">
+      <p className="text-sm font-medium text-slate-500">{title}</p>
+      <p className="mt-2 text-3xl font-black tracking-tight">{formatK(value)}</p>
+      <p className="mt-2 text-xs uppercase tracking-[0.2em] text-slate-400">{subtitle}</p>
+    </div>
+  );
+}
+
+function CompactBookingCard({ booking }: { booking: any }) {
+  return (
+    <div className="rounded-[22px] border border-slate-200 bg-slate-50 p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="font-black">{booking.guest_name}</p>
+          <p className="text-sm text-slate-500">
+            Room {booking.room_number || "-"} • {booking.room?.room_type || "Room"}
+          </p>
+        </div>
+        <span className={`rounded-full border px-3 py-1 text-xs font-semibold ${bookingStatusStyles[booking.status]}`}>
+          {booking.status}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function FeatureCard({ title, text }: { title: string; text: string }) {
+  return (
+    <div className="rounded-[24px] border border-white/10 bg-white/5 p-5 backdrop-blur">
+      <h3 className="text-lg font-black">{title}</h3>
+      <p className="mt-2 text-sm text-slate-300">{text}</p>
+    </div>
+  );
+}
+
+function EmptyState({ title, text }: { title: string; text: string }) {
+  return (
+    <div className="rounded-[24px] border border-dashed border-slate-300 bg-slate-50 p-8 text-center">
+      <h4 className="text-lg font-black text-slate-800">{title}</h4>
+      <p className="mt-2 text-sm text-slate-500">{text}</p>
+    </div>
+  );
+}
+
+function InputField({
+  label,
+  value,
+  onChange,
+  placeholder,
+  type = "text",
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  placeholder?: string;
+  type?: string;
+}) {
+  return (
+    <div>
+      <label className="mb-1 block text-sm font-medium text-slate-700">{label}</label>
+      <input
+        type={type}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 outline-none transition focus:border-indigo-400"
+      />
+    </div>
+  );
+}
+
+function SelectField({
+  label,
+  value,
+  onChange,
+  options,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  options: readonly string[];
+}) {
+  return (
+    <div>
+      <label className="mb-1 block text-sm font-medium text-slate-700">{label}</label>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 outline-none transition focus:border-indigo-400"
+      >
+        {options.map((option) => (
+          <option key={option} value={option}>
+            {option}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
+function TextAreaField({
+  label,
+  value,
+  onChange,
+  placeholder,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  placeholder?: string;
+}) {
+  return (
+    <div>
+      <label className="mb-1 block text-sm font-medium text-slate-700">{label}</label>
+      <textarea
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        className="min-h-[100px] w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 outline-none transition focus:border-indigo-400"
+      />
+    </div>
+  );
+}
