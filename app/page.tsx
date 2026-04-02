@@ -294,6 +294,7 @@ export default function MotelSupabasePremiumPage() {
   const [editingGuestId, setEditingGuestId] = useState<number | null>(null);
   const [editingBookingId, setEditingBookingId] = useState<number | null>(null);
   const [editingPaymentId, setEditingPaymentId] = useState<number | null>(null);
+  const [selectedBookingId, setSelectedBookingId] = useState<number | null>(null);
 
   function showToast(text: string, type: "success" | "error" | "info" = "info") {
     setMessage(text);
@@ -384,6 +385,31 @@ export default function MotelSupabasePremiumPage() {
       };
     });
   }, [bookings, payments, rooms]);
+
+  const selectedBooking = useMemo(
+    () => bookingViews.find((booking) => booking.id === selectedBookingId) || null,
+    [bookingViews, selectedBookingId]
+  );
+
+  const selectedBookingPayments = useMemo(() => {
+    if (!selectedBookingId) return [];
+    return payments
+      .filter((payment) => payment.booking_id === selectedBookingId)
+      .sort((a, b) => Number(b.id) - Number(a.id));
+  }, [payments, selectedBookingId]);
+
+  const linkedGuest = useMemo(() => {
+    if (!selectedBooking) return null;
+    return (
+      guests.find(
+        (guest) =>
+          normalize(guest.full_name) === normalize(selectedBooking.guest_name) &&
+          normalize(guest.phone) === normalize(selectedBooking.phone)
+      ) ||
+      guests.find((guest) => normalize(guest.full_name) === normalize(selectedBooking.guest_name)) ||
+      null
+    );
+  }, [selectedBooking, guests]);
 
   const dashboardStats = useMemo(() => {
     const totalRevenue = payments.reduce((sum, payment) => sum + Number(payment.amount || 0), 0);
@@ -1015,6 +1041,7 @@ export default function MotelSupabasePremiumPage() {
       }
 
       if (editingBookingId === bookingId) resetBookingForm();
+      if (selectedBookingId === bookingId) setSelectedBookingId(null);
       await loadAllData();
       showToast("Booking deleted.", "success");
     } catch (error: any) {
@@ -1915,267 +1942,391 @@ export default function MotelSupabasePremiumPage() {
       )}
 
       {activeTab === "bookings" && (
-        <section className="grid gap-6 xl:grid-cols-[430px_1fr]">
-          <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
-            <div className="mb-4 flex items-center justify-between gap-3">
-              <div>
-                <h3 className="text-xl font-black tracking-tight">{editingBookingId ? "Edit Booking" : "Create Booking"}</h3>
-                <p className="text-sm text-slate-500">
-                  {editingBookingId ? "Update stay details and save changes" : "Register a new stay and optional deposit"}
-                </p>
-              </div>
-              {editingBookingId && (
-                <button
-                  onClick={resetBookingForm}
-                  className="rounded-2xl border border-slate-200 px-3 py-2 text-sm font-semibold hover:bg-slate-50"
-                >
-                  Cancel Edit
-                </button>
-              )}
-            </div>
-
-            <div className="space-y-4">
-              <InputField
-                label="Guest Name"
-                value={bookingForm.guest_name}
-                onChange={(value) => setBookingForm((prev) => ({ ...prev, guest_name: value }))}
-                placeholder="Enter guest name"
-              />
-
-              <InputField
-                label="Phone"
-                value={bookingForm.phone}
-                onChange={(value) => setBookingForm((prev) => ({ ...prev, phone: value }))}
-                placeholder="Phone number"
-              />
-
-              <div>
-                <label className="mb-1 block text-sm font-medium text-slate-700">Select Room</label>
-                <select
-                  value={bookingForm.room_id}
-                  onChange={(e) => setBookingForm((prev) => ({ ...prev, room_id: Number(e.target.value) }))}
-                  className="w-full rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:border-indigo-400"
-                >
-                  <option value={0}>Select room</option>
-                  {availableRooms.map((room) => (
-                    <option key={room.id} value={room.id}>
-                      {room.room_number} - {room.room_type} - {formatK(room.price)}/{room.billing_type}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <InputField
-                label="Check-In Date"
-                type="date"
-                value={bookingForm.check_in_date}
-                onChange={(value) => setBookingForm((prev) => ({ ...prev, check_in_date: value }))}
-              />
-
-              <InputField
-                label="Check-Out Date"
-                type="date"
-                value={bookingForm.check_out_date}
-                onChange={(value) => setBookingForm((prev) => ({ ...prev, check_out_date: value }))}
-              />
-
-              {!editingBookingId && (
-                <>
-                  <InputField
-                    label="Deposit"
-                    type="number"
-                    value={String(bookingForm.deposit)}
-                    onChange={(value) => setBookingForm((prev) => ({ ...prev, deposit: Number(value) || 0 }))}
-                  />
-
-                  <SelectField
-                    label="Deposit Method"
-                    value={bookingForm.deposit_method}
-                    onChange={(value) => setBookingForm((prev) => ({ ...prev, deposit_method: value }))}
-                    options={["Cash", "Card", "Bank Transfer", "Mobile Transfer"]}
-                  />
-                </>
-              )}
-
-              <SelectField
-                label="Booking Status"
-                value={bookingForm.status}
-                onChange={(value) => setBookingForm((prev) => ({ ...prev, status: value as BookingStatus }))}
-                options={["Reserved", "Checked In", "Checked Out", "Cancelled"]}
-              />
-
-              <TextAreaField
-                label="Notes"
-                value={bookingForm.notes}
-                onChange={(value) => setBookingForm((prev) => ({ ...prev, notes: value }))}
-                placeholder="Optional notes"
-              />
-
-              {currentConflict && (
-                <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-medium text-rose-700">
-                  Room conflict: {selectedRoom?.room_number} already overlaps with {currentConflict.guest_name} from {currentConflict.check_in_date} to {currentConflict.check_out_date}.
-                </div>
-              )}
-
-              <div className="rounded-[24px] border border-slate-200 bg-gradient-to-br from-indigo-50 to-white p-4">
-                <h4 className="mb-3 font-black text-slate-900">Booking Summary</h4>
-                <div className="space-y-2 text-sm text-slate-700">
-                  <p>Room: {selectedRoom ? `${selectedRoom.room_number} (${selectedRoom.room_type})` : "-"}</p>
-                  <p>Billing: {selectedRoom?.billing_type || "-"}</p>
-                  <p>Rate: {formatK(bookingRate)}</p>
-                  <p>
-                    Duration: {bookingDuration}{" "}
-                    {selectedRoom?.billing_type === "Month" ? "month(s)" : "night(s)"}
-                  </p>
-                  <p>Total: {formatK(bookingTotal)}</p>
-                  {!editingBookingId && <p>Deposit: {formatK(bookingForm.deposit)}</p>}
-                  <p className="font-bold">
-                    Balance: {formatK(editingBookingId ? bookingTotal : bookingBalance)}
-                  </p>
-                </div>
-              </div>
-
-              <button
-                onClick={saveBooking}
-                className="w-full rounded-2xl bg-slate-950 px-4 py-3 font-semibold text-white transition hover:bg-slate-800"
-              >
-                {editingBookingId ? "Update Booking" : "Save Booking"}
-              </button>
-            </div>
-          </section>
-
-          <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
-            <div className="mb-4 flex flex-col gap-4">
-              <div className="flex items-center justify-between gap-3">
+        <section className="grid gap-6 xl:grid-cols-[1fr_420px]">
+          <section className="grid gap-6 xl:grid-cols-[430px_1fr]">
+            <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
+              <div className="mb-4 flex items-center justify-between gap-3">
                 <div>
-                  <h3 className="text-xl font-black tracking-tight">Bookings List</h3>
-                  <p className="text-sm text-slate-500">Search stays by guest, room, status, or date</p>
+                  <h3 className="text-xl font-black tracking-tight">{editingBookingId ? "Edit Booking" : "Create Booking"}</h3>
+                  <p className="text-sm text-slate-500">
+                    {editingBookingId ? "Update stay details and save changes" : "Register a new stay and optional deposit"}
+                  </p>
                 </div>
-                <button
-                  onClick={() => loadAllData()}
-                  className="rounded-2xl border border-slate-200 px-3 py-2 text-sm font-semibold hover:bg-slate-50"
-                >
-                  Refresh
-                </button>
+                {editingBookingId && (
+                  <button
+                    onClick={resetBookingForm}
+                    className="rounded-2xl border border-slate-200 px-3 py-2 text-sm font-semibold hover:bg-slate-50"
+                  >
+                    Cancel Edit
+                  </button>
+                )}
               </div>
 
-              <div className="grid gap-3 md:grid-cols-4">
+              <div className="space-y-4">
                 <InputField
-                  label="Search Bookings"
-                  value={bookingSearch}
-                  onChange={setBookingSearch}
-                  placeholder="Guest, phone, room"
+                  label="Guest Name"
+                  value={bookingForm.guest_name}
+                  onChange={(value) => setBookingForm((prev) => ({ ...prev, guest_name: value }))}
+                  placeholder="Enter guest name"
                 />
-                <SelectField
-                  label="Status Filter"
-                  value={bookingStatusFilter}
-                  onChange={setBookingStatusFilter}
-                  options={["All", "Reserved", "Checked In", "Checked Out", "Cancelled"]}
-                />
+
                 <InputField
-                  label="Date Filter"
-                  type="date"
-                  value={bookingDateFilter}
-                  onChange={setBookingDateFilter}
+                  label="Phone"
+                  value={bookingForm.phone}
+                  onChange={(value) => setBookingForm((prev) => ({ ...prev, phone: value }))}
+                  placeholder="Phone number"
                 />
-                <div className="flex items-end">
-                  <button
-                    onClick={clearBookingFilters}
-                    className="w-full rounded-2xl border border-slate-200 px-4 py-3 text-sm font-semibold hover:bg-slate-50"
+
+                <div>
+                  <label className="mb-1 block text-sm font-medium text-slate-700">Select Room</label>
+                  <select
+                    value={bookingForm.room_id}
+                    onChange={(e) => setBookingForm((prev) => ({ ...prev, room_id: Number(e.target.value) }))}
+                    className="w-full rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:border-indigo-400"
                   >
-                    Clear Filters
+                    <option value={0}>Select room</option>
+                    {availableRooms.map((room) => (
+                      <option key={room.id} value={room.id}>
+                        {room.room_number} - {room.room_type} - {formatK(room.price)}/{room.billing_type}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <InputField
+                  label="Check-In Date"
+                  type="date"
+                  value={bookingForm.check_in_date}
+                  onChange={(value) => setBookingForm((prev) => ({ ...prev, check_in_date: value }))}
+                />
+
+                <InputField
+                  label="Check-Out Date"
+                  type="date"
+                  value={bookingForm.check_out_date}
+                  onChange={(value) => setBookingForm((prev) => ({ ...prev, check_out_date: value }))}
+                />
+
+                {!editingBookingId && (
+                  <>
+                    <InputField
+                      label="Deposit"
+                      type="number"
+                      value={String(bookingForm.deposit)}
+                      onChange={(value) => setBookingForm((prev) => ({ ...prev, deposit: Number(value) || 0 }))}
+                    />
+
+                    <SelectField
+                      label="Deposit Method"
+                      value={bookingForm.deposit_method}
+                      onChange={(value) => setBookingForm((prev) => ({ ...prev, deposit_method: value }))}
+                      options={["Cash", "Card", "Bank Transfer", "Mobile Transfer"]}
+                    />
+                  </>
+                )}
+
+                <SelectField
+                  label="Booking Status"
+                  value={bookingForm.status}
+                  onChange={(value) => setBookingForm((prev) => ({ ...prev, status: value as BookingStatus }))}
+                  options={["Reserved", "Checked In", "Checked Out", "Cancelled"]}
+                />
+
+                <TextAreaField
+                  label="Notes"
+                  value={bookingForm.notes}
+                  onChange={(value) => setBookingForm((prev) => ({ ...prev, notes: value }))}
+                  placeholder="Optional notes"
+                />
+
+                {currentConflict && (
+                  <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-medium text-rose-700">
+                    Room conflict: {selectedRoom?.room_number} already overlaps with {currentConflict.guest_name} from {currentConflict.check_in_date} to {currentConflict.check_out_date}.
+                  </div>
+                )}
+
+                <div className="rounded-[24px] border border-slate-200 bg-gradient-to-br from-indigo-50 to-white p-4">
+                  <h4 className="mb-3 font-black text-slate-900">Booking Summary</h4>
+                  <div className="space-y-2 text-sm text-slate-700">
+                    <p>Room: {selectedRoom ? `${selectedRoom.room_number} (${selectedRoom.room_type})` : "-"}</p>
+                    <p>Billing: {selectedRoom?.billing_type || "-"}</p>
+                    <p>Rate: {formatK(bookingRate)}</p>
+                    <p>
+                      Duration: {bookingDuration}{" "}
+                      {selectedRoom?.billing_type === "Month" ? "month(s)" : "night(s)"}
+                    </p>
+                    <p>Total: {formatK(bookingTotal)}</p>
+                    {!editingBookingId && <p>Deposit: {formatK(bookingForm.deposit)}</p>}
+                    <p className="font-bold">
+                      Balance: {formatK(editingBookingId ? bookingTotal : bookingBalance)}
+                    </p>
+                  </div>
+                </div>
+
+                <button
+                  onClick={saveBooking}
+                  className="w-full rounded-2xl bg-slate-950 px-4 py-3 font-semibold text-white transition hover:bg-slate-800"
+                >
+                  {editingBookingId ? "Update Booking" : "Save Booking"}
+                </button>
+              </div>
+            </section>
+
+            <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
+              <div className="mb-4 flex flex-col gap-4">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <h3 className="text-xl font-black tracking-tight">Bookings List</h3>
+                    <p className="text-sm text-slate-500">Manage stay status, balances, and receipts</p>
+                  </div>
+                  <button
+                    onClick={() => loadAllData()}
+                    className="rounded-2xl border border-slate-200 px-3 py-2 text-sm font-semibold hover:bg-slate-50"
+                  >
+                    Refresh
                   </button>
                 </div>
+
+                <div className="grid gap-3 md:grid-cols-4">
+                  <InputField
+                    label="Search Bookings"
+                    value={bookingSearch}
+                    onChange={setBookingSearch}
+                    placeholder="Guest, phone, room"
+                  />
+                  <SelectField
+                    label="Status Filter"
+                    value={bookingStatusFilter}
+                    onChange={setBookingStatusFilter}
+                    options={["All", "Reserved", "Checked In", "Checked Out", "Cancelled"]}
+                  />
+                  <InputField
+                    label="Date Filter"
+                    type="date"
+                    value={bookingDateFilter}
+                    onChange={setBookingDateFilter}
+                  />
+                  <div className="flex items-end">
+                    <button
+                      onClick={clearBookingFilters}
+                      className="w-full rounded-2xl border border-slate-200 px-4 py-3 text-sm font-semibold hover:bg-slate-50"
+                    >
+                      Clear Filters
+                    </button>
+                  </div>
+                </div>
               </div>
-            </div>
 
-            <div className="mb-4 text-sm text-slate-500">
-              Showing {filteredBookings.length} of {bookingViews.length} booking(s)
-            </div>
+              <div className="mb-4 text-sm text-slate-500">
+                Showing {filteredBookings.length} of {bookingViews.length} booking(s)
+              </div>
 
-            <div className="space-y-4">
-              {filteredBookings.length === 0 ? (
-                <EmptyState title="No bookings found" text="Try a different booking search, status, or date." />
-              ) : (
-                filteredBookings.map((booking) => (
-                  <div
-                    key={booking.id}
-                    className="rounded-[28px] border border-slate-200 bg-gradient-to-br from-white to-slate-50 p-4"
-                  >
-                    <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
-                      <div>
-                        <h4 className="text-lg font-black">{booking.guest_name}</h4>
-                        <p className="text-sm text-slate-500">
-                          {booking.room_number || "-"} • {booking.room?.room_type || "Room"}
-                        </p>
+              <div className="space-y-4">
+                {filteredBookings.length === 0 ? (
+                  <EmptyState title="No bookings found" text="Try a different booking search, status, or date." />
+                ) : (
+                  filteredBookings.map((booking) => (
+                    <div
+                      key={booking.id}
+                      className={`rounded-[28px] border p-4 ${selectedBookingId === booking.id ? "border-indigo-300 bg-indigo-50" : "border-slate-200 bg-gradient-to-br from-white to-slate-50"}`}
+                    >
+                      <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
+                        <div>
+                          <h4 className="text-lg font-black">{booking.guest_name}</h4>
+                          <p className="text-sm text-slate-500">
+                            {booking.room_number || "-"} • {booking.room?.room_type || "Room"}
+                          </p>
+                        </div>
+
+                        <div className="flex flex-wrap gap-2">
+                          <span className={`rounded-full border px-3 py-1 text-xs font-semibold ${bookingStatusStyles[booking.status]}`}>
+                            {booking.status}
+                          </span>
+                          <button
+                            onClick={() => printReceipt(booking.id)}
+                            className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                          >
+                            Print Receipt
+                          </button>
+                        </div>
                       </div>
 
-                      <div className="flex flex-wrap gap-2">
-                        <span className={`rounded-full border px-3 py-1 text-xs font-semibold ${bookingStatusStyles[booking.status]}`}>
-                          {booking.status}
-                        </span>
-                        <button
-                          onClick={() => printReceipt(booking.id)}
-                          className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                      <div className="mt-4 grid gap-2 text-sm text-slate-700 sm:grid-cols-2 xl:grid-cols-4">
+                        <p>Phone: {booking.phone || "-"}</p>
+                        <p>Check-In: {booking.check_in_date}</p>
+                        <p>Check-Out: {booking.check_out_date}</p>
+                        <p>Total: {formatK(booking.total_amount)}</p>
+                        <p>Paid: {formatK(booking.paid)}</p>
+                        <p>Due: {formatK(booking.due)}</p>
+                        <p>Room Rate: {formatK(booking.room?.price || 0)}</p>
+                        <p>Billing: {booking.room?.billing_type || "-"}</p>
+                      </div>
+
+                      <div className="mt-4">
+                        <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">
+                          Quick Booking Status
+                        </label>
+                        <select
+                          value={booking.status}
+                          onChange={(e) =>
+                            changeBookingStatus(
+                              booking.id,
+                              booking.room_id,
+                              e.target.value as BookingStatus
+                            )
+                          }
+                          className="w-full rounded-2xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-indigo-400"
                         >
-                          Print Receipt
+                          {["Reserved", "Checked In", "Checked Out", "Cancelled"].map((status) => (
+                            <option key={status} value={status}>
+                              {status}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div className="mt-4 grid grid-cols-3 gap-2">
+                        <button
+                          onClick={() => setSelectedBookingId(booking.id)}
+                          className="rounded-2xl border border-indigo-200 bg-white px-3 py-2 text-sm font-semibold text-indigo-700 hover:bg-indigo-50"
+                        >
+                          View Details
+                        </button>
+                        <button
+                          onClick={() => startEditBooking(booking)}
+                          className="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold hover:bg-slate-50"
+                        >
+                          Edit
+                        </button>
+                        <button
+                          onClick={() => deleteBooking(booking.id, booking.room_id)}
+                          className="rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-700 hover:bg-rose-100"
+                        >
+                          Delete
                         </button>
                       </div>
                     </div>
+                  ))
+                )}
+              </div>
+            </section>
+          </section>
 
-                    <div className="mt-4 grid gap-2 text-sm text-slate-700 sm:grid-cols-2 xl:grid-cols-4">
-                      <p>Phone: {booking.phone || "-"}</p>
-                      <p>Check-In: {booking.check_in_date}</p>
-                      <p>Check-Out: {booking.check_out_date}</p>
-                      <p>Total: {formatK(booking.total_amount)}</p>
-                      <p>Paid: {formatK(booking.paid)}</p>
-                      <p>Due: {formatK(booking.due)}</p>
-                      <p>Room Rate: {formatK(booking.room?.price || 0)}</p>
-                      <p>Billing: {booking.room?.billing_type || "-"}</p>
-                    </div>
-
-                    <div className="mt-4">
-                      <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">
-                        Quick Booking Status
-                      </label>
-                      <select
-                        value={booking.status}
-                        onChange={(e) =>
-                          changeBookingStatus(
-                            booking.id,
-                            booking.room_id,
-                            e.target.value as BookingStatus
-                          )
-                        }
-                        className="w-full rounded-2xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-indigo-400"
-                      >
-                        {["Reserved", "Checked In", "Checked Out", "Cancelled"].map((status) => (
-                          <option key={status} value={status}>
-                            {status}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-
-                    <div className="mt-4 grid grid-cols-2 gap-2">
-                      <button
-                        onClick={() => startEditBooking(booking)}
-                        className="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold hover:bg-slate-50"
-                      >
-                        Edit
-                      </button>
-                      <button
-                        onClick={() => deleteBooking(booking.id, booking.room_id)}
-                        className="rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-700 hover:bg-rose-100"
-                      >
-                        Delete
-                      </button>
-                    </div>
-                  </div>
-                ))
+          <aside className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="mb-4 flex items-center justify-between gap-3">
+              <div>
+                <h3 className="text-xl font-black tracking-tight">Booking Details</h3>
+                <p className="text-sm text-slate-500">Open a booking to view full details</p>
+              </div>
+              {selectedBooking && (
+                <button
+                  onClick={() => setSelectedBookingId(null)}
+                  className="rounded-2xl border border-slate-200 px-3 py-2 text-sm font-semibold hover:bg-slate-50"
+                >
+                  Close
+                </button>
               )}
             </div>
-          </section>
+
+            {!selectedBooking ? (
+              <EmptyState title="No booking selected" text="Click “View Details” on a booking card to open full booking details here." />
+            ) : (
+              <div className="space-y-5">
+                <div className="rounded-[24px] border border-slate-200 bg-gradient-to-br from-white to-slate-50 p-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <h4 className="text-xl font-black">{selectedBooking.guest_name}</h4>
+                      <p className="text-sm text-slate-500">Booking Ref #{selectedBooking.id}</p>
+                    </div>
+                    <span className={`rounded-full border px-3 py-1 text-xs font-semibold ${bookingStatusStyles[selectedBooking.status]}`}>
+                      {selectedBooking.status}
+                    </span>
+                  </div>
+
+                  <div className="mt-4 grid gap-3 text-sm text-slate-700 sm:grid-cols-2">
+                    <p><strong>Phone:</strong> {selectedBooking.phone || "-"}</p>
+                    <p><strong>Room:</strong> {selectedBooking.room_number || "-"}</p>
+                    <p><strong>Room Type:</strong> {selectedBooking.room?.room_type || "-"}</p>
+                    <p><strong>Billing:</strong> {selectedBooking.room?.billing_type || "-"}</p>
+                    <p><strong>Check-In:</strong> {selectedBooking.check_in_date}</p>
+                    <p><strong>Check-Out:</strong> {selectedBooking.check_out_date}</p>
+                    <p><strong>Total:</strong> {formatK(selectedBooking.total_amount)}</p>
+                    <p><strong>Paid:</strong> {formatK(selectedBooking.paid)}</p>
+                    <p><strong>Balance:</strong> {formatK(selectedBooking.due)}</p>
+                    <p><strong>Created:</strong> {String(selectedBooking.created_at || "-").slice(0, 10)}</p>
+                  </div>
+
+                  <div className="mt-4 grid grid-cols-2 gap-2">
+                    <button
+                      onClick={() => printReceipt(selectedBooking.id)}
+                      className="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold hover:bg-slate-50"
+                    >
+                      Print Receipt
+                    </button>
+                    <button
+                      onClick={() => startEditBooking(selectedBooking)}
+                      className="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold hover:bg-slate-50"
+                    >
+                      Edit Booking
+                    </button>
+                  </div>
+                </div>
+
+                <div className="rounded-[24px] border border-slate-200 bg-slate-50 p-4">
+                  <h4 className="text-lg font-black">Guest Details</h4>
+                  {linkedGuest ? (
+                    <div className="mt-3 grid gap-3 text-sm text-slate-700">
+                      <p><strong>Full Name:</strong> {linkedGuest.full_name}</p>
+                      <p><strong>Phone:</strong> {linkedGuest.phone || "-"}</p>
+                      <p><strong>Email:</strong> {linkedGuest.email || "-"}</p>
+                      <p><strong>ID Number:</strong> {linkedGuest.id_number || "-"}</p>
+                      <p><strong>Address:</strong> {linkedGuest.address || "-"}</p>
+                      <p><strong>Notes:</strong> {linkedGuest.notes || "-"}</p>
+                    </div>
+                  ) : (
+                    <p className="mt-3 text-sm text-slate-500">No linked guest record found for this booking.</p>
+                  )}
+                </div>
+
+                <div className="rounded-[24px] border border-slate-200 bg-slate-50 p-4">
+                  <h4 className="text-lg font-black">Room Details</h4>
+                  {selectedBooking.room ? (
+                    <div className="mt-3 grid gap-3 text-sm text-slate-700">
+                      <p><strong>Room Number:</strong> {selectedBooking.room.room_number}</p>
+                      <p><strong>Room Type:</strong> {selectedBooking.room.room_type}</p>
+                      <p><strong>Rate:</strong> {formatK(selectedBooking.room.price)}</p>
+                      <p><strong>Billing Type:</strong> {selectedBooking.room.billing_type}</p>
+                      <p><strong>Status:</strong> {selectedBooking.room.status}</p>
+                      <p><strong>Notes:</strong> {selectedBooking.room.notes || "-"}</p>
+                    </div>
+                  ) : (
+                    <p className="mt-3 text-sm text-slate-500">No linked room details found.</p>
+                  )}
+                </div>
+
+                <div className="rounded-[24px] border border-slate-200 bg-slate-50 p-4">
+                  <h4 className="text-lg font-black">Payment History</h4>
+                  <div className="mt-3 space-y-3">
+                    {selectedBookingPayments.length === 0 ? (
+                      <p className="text-sm text-slate-500">No payment recorded yet for this booking.</p>
+                    ) : (
+                      selectedBookingPayments.map((payment) => (
+                        <div key={payment.id} className="rounded-2xl border border-slate-200 bg-white p-3">
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <p className="font-semibold text-slate-800">{payment.payment_method || "Unknown method"}</p>
+                              <p className="text-sm text-slate-500">{payment.payment_date || "-"}</p>
+                            </div>
+                            <p className="font-black text-slate-900">{formatK(payment.amount)}</p>
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+          </aside>
         </section>
       )}
 
