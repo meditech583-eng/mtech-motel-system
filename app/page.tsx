@@ -166,6 +166,16 @@ function AppShell({
   onSignOut,
   userEmail,
 }: any) {
+  const mobileTabs = [
+    { key: "dashboard", label: "Home" },
+    { key: "rooms", label: "Rooms" },
+    { key: "bookings", label: "Bookings" },
+    { key: "checkouts", label: "Check-Out" },
+    { key: "payments", label: "Payments" },
+    { key: "reports", label: "Reports" },
+    { key: "guests", label: "Guests" },
+  ];
+
   return (
     <main className="min-h-screen bg-slate-100 text-slate-900">
       <div className="flex min-h-screen">
@@ -198,33 +208,57 @@ function AppShell({
             </button>
           </div>
         </aside>
+
         <div className="flex-1">
-          <header className="border-b border-slate-200 bg-white/90 px-4 py-4 shadow-sm backdrop-blur sm:px-6">
-            <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+          <header className="sticky top-0 z-40 border-b border-slate-200 bg-white/95 px-4 py-4 shadow-sm backdrop-blur sm:px-6">
+            <div className="flex items-start justify-between gap-3">
               <div>
-                <p className="text-xs font-semibold uppercase tracking-[0.25em] text-indigo-600">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.25em] text-indigo-600">
                   Live Motel Operations
                 </p>
-                <h2 className="mt-1 text-3xl font-black tracking-tight text-slate-900">{title}</h2>
+                <h2 className="mt-1 text-2xl font-black tracking-tight text-slate-900 sm:text-3xl">{title}</h2>
                 <p className="mt-1 text-sm text-slate-500">{subtitle}</p>
               </div>
-              <div className="flex flex-wrap gap-2 lg:hidden">
-                <MobileTabButton label="Dashboard" active={activeTab === "dashboard"} onClick={() => setActiveTab("dashboard")} />
-                <MobileTabButton label="Rooms" active={activeTab === "rooms"} onClick={() => setActiveTab("rooms")} />
-                <MobileTabButton label="Bookings" active={activeTab === "bookings"} onClick={() => setActiveTab("bookings")} />
-                <MobileTabButton label="Check-Out" active={activeTab === "checkouts"} onClick={() => setActiveTab("checkouts")} />
-                <MobileTabButton label="Guests" active={activeTab === "guests"} onClick={() => setActiveTab("guests")} />
-                <MobileTabButton label="Payments" active={activeTab === "payments"} onClick={() => setActiveTab("payments")} />
-                <MobileTabButton label="Reports" active={activeTab === "reports"} onClick={() => setActiveTab("reports")} />
+
+              <div className="hidden lg:block">
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-right">
+                  <p className="text-xs uppercase tracking-[0.2em] text-slate-400">Signed in</p>
+                  <p className="mt-1 max-w-[220px] truncate text-sm font-semibold text-slate-700">{userEmail}</p>
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-4 -mx-4 overflow-x-auto px-4 lg:hidden">
+              <div className="flex min-w-max gap-2 pb-1">
+                {mobileTabs.map((tab) => (
+                  <MobileTabButton
+                    key={tab.key}
+                    label={tab.label}
+                    active={activeTab === tab.key}
+                    onClick={() => setActiveTab(tab.key)}
+                  />
+                ))}
               </div>
             </div>
           </header>
-          <div className="p-4 sm:p-6">{children}</div>
+
+          <div className="p-4 pb-24 sm:p-6 lg:pb-6">{children}</div>
+
+          <nav className="fixed inset-x-0 bottom-0 z-50 border-t border-slate-200 bg-white/95 px-2 py-2 shadow-[0_-8px_30px_rgba(15,23,42,0.08)] backdrop-blur lg:hidden">
+            <div className="grid grid-cols-5 gap-2">
+              <MobileBottomNavButton label="Home" active={activeTab === "dashboard"} onClick={() => setActiveTab("dashboard")} />
+              <MobileBottomNavButton label="Rooms" active={activeTab === "rooms"} onClick={() => setActiveTab("rooms")} />
+              <MobileBottomNavButton label="Bookings" active={activeTab === "bookings"} onClick={() => setActiveTab("bookings")} />
+              <MobileBottomNavButton label="Pay" active={activeTab === "payments"} onClick={() => setActiveTab("payments")} />
+              <MobileBottomNavButton label="More" active={activeTab === "checkouts" || activeTab === "reports" || activeTab === "guests"} onClick={() => setActiveTab("checkouts")} />
+            </div>
+          </nav>
         </div>
       </div>
     </main>
   );
 }
+
 export default function MotelSupabasePremiumPage() {
   const [activeTab, setActiveTab] = useState<Tab>("dashboard");
   const [booting, setBooting] = useState(true);
@@ -2285,7 +2319,13 @@ function printReceipt(bookingId: number) {
               </div>
             </section>
           </section>
-          <aside className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
+          <aside
+            className={`${
+              selectedBooking
+                ? "fixed inset-0 z-50 overflow-y-auto bg-white p-5 sm:p-6"
+                : "hidden"
+            } rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm md:static md:block`}
+          >
             <div className="mb-4 flex items-center justify-between gap-3">
               <div>
                 <h3 className="text-xl font-black tracking-tight">Booking Details</h3>
@@ -3176,14 +3216,36 @@ function MobileTabButton({
   return (
     <button
       onClick={onClick}
-      className={`rounded-xl px-3 py-2 text-sm font-medium ${
-        active ? "bg-slate-950 text-white" : "bg-slate-100 text-slate-700"
+      className={`whitespace-nowrap rounded-2xl px-4 py-2.5 text-sm font-semibold transition ${
+        active ? "bg-slate-950 text-white shadow-sm" : "bg-slate-100 text-slate-700"
       }`}
     >
       {label}
     </button>
   );
 }
+
+function MobileBottomNavButton({
+  label,
+  active,
+  onClick,
+}: {
+  label: string;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`rounded-2xl px-2 py-3 text-center text-xs font-semibold transition ${
+        active ? "bg-slate-950 text-white shadow-sm" : "bg-slate-100 text-slate-600"
+      }`}
+    >
+      {label}
+    </button>
+  );
+}
+
 function PremiumStatCard({
   label,
   value,
