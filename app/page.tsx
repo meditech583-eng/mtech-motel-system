@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { createClient } from "../lib/supabase/client";
 const supabase = createClient();
-type Tab = "dashboard" | "rooms" | "bookings" | "guests" | "payments" | "reports";
+type Tab = "dashboard" | "rooms" | "bookings" | "checkouts" | "guests" | "payments" | "reports";
 type RoomStatus =
   | "Available"
   | "Occupied"
@@ -95,6 +95,9 @@ function isKeyDepositRefundPayment(payment: Payment) {
 function isRoomRevenuePayment(payment: Payment) {
   return !isKeyDepositReceivedPayment(payment) && !isKeyDepositRefundPayment(payment);
 }
+function isCheckOutPayment(payment: Payment) {
+  return String(payment.payment_method || "").startsWith("Check-Out Payment -");
+}
 function getKeyDepositMethodLabel(action: "received" | "refunded", method: string) {
   return `${action === "received" ? KEY_DEPOSIT_RECEIVED_PREFIX : KEY_DEPOSIT_REFUNDED_PREFIX} - ${method}`;
 }
@@ -182,6 +185,7 @@ function AppShell({
               <SidebarButton label="Dashboard" active={activeTab === "dashboard"} onClick={() => setActiveTab("dashboard")} />
               <SidebarButton label="Rooms" active={activeTab === "rooms"} onClick={() => setActiveTab("rooms")} />
               <SidebarButton label="Bookings" active={activeTab === "bookings"} onClick={() => setActiveTab("bookings")} />
+              <SidebarButton label="Check-Out" active={activeTab === "checkouts"} onClick={() => setActiveTab("checkouts")} />
               <SidebarButton label="Guests" active={activeTab === "guests"} onClick={() => setActiveTab("guests")} />
               <SidebarButton label="Payments" active={activeTab === "payments"} onClick={() => setActiveTab("payments")} />
               <SidebarButton label="Reports" active={activeTab === "reports"} onClick={() => setActiveTab("reports")} />
@@ -208,6 +212,7 @@ function AppShell({
                 <MobileTabButton label="Dashboard" active={activeTab === "dashboard"} onClick={() => setActiveTab("dashboard")} />
                 <MobileTabButton label="Rooms" active={activeTab === "rooms"} onClick={() => setActiveTab("rooms")} />
                 <MobileTabButton label="Bookings" active={activeTab === "bookings"} onClick={() => setActiveTab("bookings")} />
+                <MobileTabButton label="Check-Out" active={activeTab === "checkouts"} onClick={() => setActiveTab("checkouts")} />
                 <MobileTabButton label="Guests" active={activeTab === "guests"} onClick={() => setActiveTab("guests")} />
                 <MobileTabButton label="Payments" active={activeTab === "payments"} onClick={() => setActiveTab("payments")} />
                 <MobileTabButton label="Reports" active={activeTab === "reports"} onClick={() => setActiveTab("reports")} />
@@ -275,6 +280,9 @@ export default function MotelSupabasePremiumPage() {
     status: "Reserved" as BookingStatus,
     notes: "",
     deposit_method: "Cash",
+    payment_arrangement: "Pay Now",
+    organization_name: "",
+    reference_no: "",
   });
   const [paymentForm, setPaymentForm] = useState({
     booking_id: 0,
@@ -287,6 +295,11 @@ export default function MotelSupabasePremiumPage() {
   const [editingBookingId, setEditingBookingId] = useState<number | null>(null);
   const [editingPaymentId, setEditingPaymentId] = useState<number | null>(null);
   const [selectedBookingId, setSelectedBookingId] = useState<number | null>(null);
+  const [checkoutBookingId, setCheckoutBookingId] = useState<number | null>(null);
+  const [checkoutFinalPayment, setCheckoutFinalPayment] = useState("0");
+  const [checkoutRefundKeyDeposit, setCheckoutRefundKeyDeposit] = useState(true);
+  const [checkoutRefundMethod, setCheckoutRefundMethod] = useState("Cash");
+  const [checkoutPaymentMethod, setCheckoutPaymentMethod] = useState("Cash");
   function showToast(text: string, type: "success" | "error" | "info" = "info") {
     setMessage(text);
     setMessageType(type);
@@ -399,6 +412,54 @@ export default function MotelSupabasePremiumPage() {
       .filter((payment) => payment.booking_id === selectedBookingId)
       .sort((a, b) => Number(b.id) - Number(a.id));
   }, [payments, selectedBookingId]);
+  const checkedInBookings = useMemo(() => {
+    return bookingViews.filter((booking) => booking.status === "Checked In");
+  }, [bookingViews]);
+  const checkedOutBookings = useMemo(() => {
+    return bookingViews
+      .filter((booking) => booking.status === "Checked Out")
+      .sort((a, b) => String(b.check_out_date || "").localeCompare(String(a.check_out_date || "")));
+  }, [bookingViews]);
+  const recentCheckoutSummary = useMemo(() => {
+    return checkedOutBookings.map((booking) => {
+      const bookingPayments = payments.filter((payment) => payment.booking_id === booking.id);
+      const checkoutPayment = bookingPayments
+        .filter((payment) => isCheckOutPayment(payment))
+        .reduce((sum, payment) => sum + Number(payment.amount || 0), 0);
+      const refundedDeposit = bookingPayments
+        .filter((payment) => isKeyDepositRefundPayment(payment))
+        .reduce((sum, payment) => sum + Number(payment.amount || 0), 0);
+
+      return {
+        ...booking,
+        finalCheckoutPayment: checkoutPayment,
+        keyDepositRefundedAtCheckout: refundedDeposit,
+        finalRoomPaid: Number(booking.roomPaid || 0),
+        finalBalance: Math.max(Number(booking.total_amount || 0) - Number(booking.roomPaid || 0), 0),
+      };
+    });
+  }, [checkedOutBookings, payments]);
+  const checkoutReportStats = useMemo(() => {
+    return {
+      totalCheckouts: recentCheckoutSummary.length,
+      checkoutRevenue: recentCheckoutSummary.reduce((sum, item) => sum + Number(item.finalCheckoutPayment || 0), 0),
+      refundedDeposits: recentCheckoutSummary.reduce((sum, item) => sum + Number(item.keyDepositRefundedAtCheckout || 0), 0),
+    };
+  }, [recentCheckoutSummary]);
+  const checkoutBooking = useMemo(() => {
+    return checkedInBookings.find((booking) => booking.id === checkoutBookingId) || null;
+  }, [checkedInBookings, checkoutBookingId]);
+  useEffect(() => {
+    if (!checkoutBooking) {
+      setCheckoutFinalPayment("0");
+      setCheckoutRefundKeyDeposit(true);
+      setCheckoutRefundMethod("Cash");
+      setCheckoutPaymentMethod("Cash");
+      return;
+    }
+    setCheckoutFinalPayment(String(checkoutBooking.due || 0));
+    setCheckoutRefundKeyDeposit((checkoutBooking.keyDepositPaid - checkoutBooking.keyDepositRefunded) > 0);
+  }, [checkoutBookingId]);
   const linkedGuest = useMemo(() => {
     if (!selectedBooking) return null;
     return (
@@ -595,6 +656,9 @@ export default function MotelSupabasePremiumPage() {
       status: "Reserved",
       notes: "",
       deposit_method: "Cash",
+      payment_arrangement: "Pay Now",
+      organization_name: "",
+      reference_no: "",
     });
     setEditingBookingId(null);
   }
@@ -1167,6 +1231,63 @@ export default function MotelSupabasePremiumPage() {
     ].join("\n");
     window.location.href = `mailto:${encodeURIComponent(to)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
   }
+  async function processCheckout() {
+    try {
+      if (!checkoutBooking) {
+        showToast("Please select a checked-in booking.", "error");
+        return;
+      }
+      setBusy(true);
+      const finalPaymentAmount = Math.max(Number(checkoutFinalPayment || 0), 0);
+      let newRoomPaid = Number(checkoutBooking.roomPaid || 0);
+      if (finalPaymentAmount > 0) {
+        const { error: paymentError } = await supabase.from("motel_payments").insert({
+          booking_id: checkoutBooking.id,
+          amount: finalPaymentAmount,
+          payment_method: `Check-Out Payment - ${checkoutPaymentMethod}`,
+          payment_date: todayDate(),
+        });
+        if (paymentError) throw paymentError;
+        newRoomPaid += finalPaymentAmount;
+      }
+      const refundableKeyDeposit = Math.max(Number(checkoutBooking.keyDepositPaid || 0) - Number(checkoutBooking.keyDepositRefunded || 0), 0);
+      if (checkoutRefundKeyDeposit && refundableKeyDeposit > 0) {
+        const { error: refundError } = await supabase.from("motel_payments").insert({
+          booking_id: checkoutBooking.id,
+          amount: refundableKeyDeposit,
+          payment_method: getKeyDepositMethodLabel("refunded", checkoutRefundMethod),
+          payment_date: todayDate(),
+        });
+        if (refundError) throw refundError;
+      }
+      const newBalance = Math.max(Number(checkoutBooking.total_amount || 0) - newRoomPaid, 0);
+      const { error: bookingError } = await supabase
+        .from("motel_bookings")
+        .update({
+          status: "Checked Out",
+          deposit: newRoomPaid,
+          balance: newBalance,
+        })
+        .eq("id", checkoutBooking.id);
+      if (bookingError) throw bookingError;
+      if (checkoutBooking.room_id) {
+        const { error: roomError } = await supabase
+          .from("motel_rooms")
+          .update({ status: "Cleaning" })
+          .eq("id", checkoutBooking.room_id);
+        if (roomError) throw roomError;
+      }
+      await loadAllData();
+      setCheckoutBookingId(null);
+      showToast("Guest checked out successfully.", "success");
+      setActiveTab("checkouts");
+    } catch (error: any) {
+      showToast(error.message || "Failed to process check-out.", "error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
 function printReceipt(bookingId: number) {
     const booking = bookingViews.find((item) => item.id === bookingId);
     if (!booking) {
@@ -1963,6 +2084,28 @@ function printReceipt(bookingId: number) {
                       onChange={(value) => setBookingForm((prev) => ({ ...prev, deposit_method: value }))}
                       options={["Cash", "Card", "Bank Transfer", "Mobile Transfer"]}
                     />
+                    <SelectField
+                      label="Payment Arrangement"
+                      value={bookingForm.payment_arrangement}
+                      onChange={(value) => setBookingForm((prev) => ({ ...prev, payment_arrangement: value }))}
+                      options={["Pay Now", "Part Payment", "Pay Later / Credit", "Government / Corporate"]}
+                    />
+                    {bookingForm.payment_arrangement === "Government / Corporate" && (
+                      <>
+                        <InputField
+                          label="Organisation Name"
+                          value={bookingForm.organization_name}
+                          onChange={(value) => setBookingForm((prev) => ({ ...prev, organization_name: value }))}
+                          placeholder="Example: Government Department"
+                        />
+                        <InputField
+                          label="Reference / LPO"
+                          value={bookingForm.reference_no}
+                          onChange={(value) => setBookingForm((prev) => ({ ...prev, reference_no: value }))}
+                          placeholder="Optional reference number"
+                        />
+                      </>
+                    )}
                   </>
                 )}
                 <SelectField
@@ -1993,7 +2136,9 @@ function printReceipt(bookingId: number) {
                       {selectedRoom?.billing_type === "Month" ? "month(s)" : "night(s)"}
                     </p>
                     <p>Total: {formatK(bookingTotal)}</p>
-                    {!editingBookingId && <p>Deposit: {formatK(bookingForm.deposit)}</p>}
+                    <p>Payment Arrangement: {bookingForm.payment_arrangement}</p>
+                    {!editingBookingId && <p>Room Payment Entered: {formatK(bookingForm.deposit)}</p>}
+                    <p>Suggested Room Charge: {selectedRoom ? `${formatK(selectedRoom.price)} per ${selectedRoom.billing_type}` : "-"}</p>
                     <p>Key Deposit: {formatK(bookingKeyDeposit)}</p>
                     <p className="font-bold">
                       Balance: {formatK(editingBookingId ? bookingTotal : bookingBalance)}
@@ -2013,7 +2158,7 @@ function printReceipt(bookingId: number) {
                 <div className="flex items-center justify-between gap-3">
                   <div>
                     <h3 className="text-xl font-black tracking-tight">Bookings List</h3>
-                    <p className="text-sm text-slate-500">Manage stay status, balances, and receipts</p>
+                    <p className="text-sm text-slate-500">Manage stay status, balances, receipts, and check-outs</p>
                   </div>
                   <button
                     onClick={() => loadAllData()}
@@ -2184,7 +2329,7 @@ function printReceipt(bookingId: number) {
                     <p><strong>Key Deposit Held:</strong> {formatK(selectedBooking.keyDepositPaid - selectedBooking.keyDepositRefunded)}</p>
                     <p><strong>Created:</strong> {String(selectedBooking.created_at || "-").slice(0, 10)}</p>
                   </div>
-                  <div className="mt-4 grid grid-cols-4 gap-2">
+                  <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
                     <button
                       onClick={() => printReceipt(selectedBooking.id)}
                       className="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold hover:bg-slate-50"
@@ -2196,6 +2341,20 @@ function printReceipt(bookingId: number) {
                       className="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold hover:bg-slate-50"
                     >
                       Email Receipt
+                    </button>
+                    <button
+                      onClick={() => {
+                        setPaymentForm((prev) => ({
+                          ...prev,
+                          booking_id: selectedBooking.id,
+                          amount: Number(selectedBooking.due || 0),
+                          payment_date: todayDate(),
+                        }));
+                        setActiveTab("payments");
+                      }}
+                      className="rounded-2xl border border-indigo-200 bg-indigo-50 px-3 py-2 text-sm font-semibold text-indigo-700 hover:bg-indigo-100"
+                    >
+                      Add Payment
                     </button>
                     <button
                       onClick={() => startEditBooking(selectedBooking)}
@@ -2260,7 +2419,23 @@ function printReceipt(bookingId: number) {
                   </div>
                 </div>
                 <div className="rounded-[24px] border border-slate-200 bg-slate-50 p-4">
-                  <h4 className="text-lg font-black">Payment History</h4>
+                  <div className="flex items-center justify-between gap-3">
+                    <h4 className="text-lg font-black">Payment History</h4>
+                    <button
+                      onClick={() => {
+                        setPaymentForm((prev) => ({
+                          ...prev,
+                          booking_id: selectedBooking.id,
+                          amount: Number(selectedBooking.due || 0),
+                          payment_date: todayDate(),
+                        }));
+                        setActiveTab("payments");
+                      }}
+                      className="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold hover:bg-slate-50"
+                    >
+                      Add Payment
+                    </button>
+                  </div>
                   <div className="mt-3 space-y-3">
                     {selectedBookingPayments.length === 0 ? (
                       <p className="text-sm text-slate-500">No payment recorded yet for this booking.</p>
@@ -2420,6 +2595,185 @@ function printReceipt(bookingId: number) {
           </section>
         </section>
       )}
+      {activeTab === "checkouts" && (
+        <section className="space-y-6">
+          <section className="grid gap-6 xl:grid-cols-[1fr_430px]">
+            <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
+              <div className="mb-4 flex items-center justify-between gap-3">
+                <div>
+                  <h3 className="text-xl font-black tracking-tight">Check-Out Queue</h3>
+                  <p className="text-sm text-slate-500">Process checked-in guests leaving today or later</p>
+                </div>
+                <button onClick={() => loadAllData()} className="rounded-2xl border border-slate-200 px-3 py-2 text-sm font-semibold hover:bg-slate-50">
+                  Refresh
+                </button>
+              </div>
+              <div className="mb-4 grid gap-4 sm:grid-cols-3">
+                <PremiumStatCard label="Checked In" value={checkedInBookings.length} subtext="Active stays" />
+                <PremiumStatCard label="Due Today" value={checkedInBookings.filter((b) => b.check_out_date === todayDate()).length} subtext="Expected departures" />
+                <PremiumMoneyCard label="Outstanding" value={checkedInBookings.reduce((sum, b) => sum + Number(b.due || 0), 0)} subtext="Still to collect" />
+              </div>
+              <div className="space-y-4">
+                {checkedInBookings.length === 0 ? (
+                  <EmptyState title="No checked-in guests" text="Guests marked as Checked In will appear here for check-out processing." />
+                ) : (
+                  checkedInBookings.map((booking) => (
+                    <div key={booking.id} className={`rounded-[24px] border p-4 ${checkoutBookingId === booking.id ? "border-indigo-300 bg-indigo-50" : "border-slate-200 bg-gradient-to-br from-white to-slate-50"}`}>
+                      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                        <div>
+                          <h4 className="text-lg font-black">{booking.guest_name}</h4>
+                          <p className="text-sm text-slate-500">Room {booking.room_number || "-"} • Due out {booking.check_out_date}</p>
+                        </div>
+                        <span className={`rounded-full border px-3 py-1 text-xs font-semibold ${bookingStatusStyles[booking.status]}`}>
+                          {booking.status}
+                        </span>
+                      </div>
+                      <div className="mt-3 grid gap-2 text-sm text-slate-700 sm:grid-cols-2 xl:grid-cols-4">
+                        <p>Total: {formatK(booking.total_amount)}</p>
+                        <p>Room Paid: {formatK(booking.roomPaid)}</p>
+                        <p>Balance Due: {formatK(booking.due)}</p>
+                        <p>Key Deposit Held: {formatK(Math.max(booking.keyDepositPaid - booking.keyDepositRefunded, 0))}</p>
+                      </div>
+                      <div className="mt-4 grid grid-cols-3 gap-2">
+                        <button onClick={() => setCheckoutBookingId(booking.id)} className="rounded-2xl border border-indigo-200 bg-white px-3 py-2 text-sm font-semibold text-indigo-700 hover:bg-indigo-50">
+                          Process Check-Out
+                        </button>
+                        <button onClick={() => printReceipt(booking.id)} className="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold hover:bg-slate-50">
+                          Print Receipt
+                        </button>
+                        <button onClick={() => emailReceipt(booking.id)} className="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold hover:bg-slate-50">
+                          Email Receipt
+                        </button>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </section>
+
+            <aside className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
+              <div className="mb-4">
+                <h3 className="text-xl font-black tracking-tight">Check-Out Summary</h3>
+                <p className="text-sm text-slate-500">Finalize payment, deposit, and room status</p>
+              </div>
+              {!checkoutBooking ? (
+                <EmptyState title="No guest selected" text="Choose a checked-in guest to complete check-out." />
+              ) : (
+                <div className="space-y-4">
+                  <div className="rounded-[24px] border border-slate-200 bg-gradient-to-br from-white to-slate-50 p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <h4 className="text-lg font-black">{checkoutBooking.guest_name}</h4>
+                        <p className="text-sm text-slate-500">Room {checkoutBooking.room_number || "-"} • {checkoutBooking.room?.room_type || "Room"}</p>
+                      </div>
+                      <span className={`rounded-full border px-3 py-1 text-xs font-semibold ${bookingStatusStyles[checkoutBooking.status]}`}>
+                        {checkoutBooking.status}
+                      </span>
+                    </div>
+                    <div className="mt-4 grid gap-2 text-sm text-slate-700 sm:grid-cols-2">
+                      <p>Total Stay: {formatK(checkoutBooking.total_amount)}</p>
+                      <p>Room Paid: {formatK(checkoutBooking.roomPaid)}</p>
+                      <p>Balance Due: {formatK(checkoutBooking.due)}</p>
+                      <p>Key Deposit Required: {formatK(checkoutBooking.keyDepositRequired)}</p>
+                      <p>Key Deposit Held: {formatK(Math.max(checkoutBooking.keyDepositPaid - checkoutBooking.keyDepositRefunded, 0))}</p>
+                      <p>Check-Out Date: {checkoutBooking.check_out_date}</p>
+                    </div>
+                  </div>
+                  <InputField label="Final Payment at Check-Out" type="number" value={checkoutFinalPayment} onChange={setCheckoutFinalPayment} />
+                  <SelectField label="Final Payment Method" value={checkoutPaymentMethod} onChange={setCheckoutPaymentMethod} options={["Cash", "Card", "Bank Transfer", "Mobile Transfer"]} />
+                  <div className="rounded-[24px] border border-slate-200 bg-slate-50 p-4">
+                    <label className="flex items-center gap-3 text-sm font-medium text-slate-700">
+                      <input type="checkbox" checked={checkoutRefundKeyDeposit} onChange={(e) => setCheckoutRefundKeyDeposit(e.target.checked)} />
+                      Refund key deposit on check-out
+                    </label>
+                    {checkoutRefundKeyDeposit && (
+                      <div className="mt-4">
+                        <SelectField label="Refund Method" value={checkoutRefundMethod} onChange={setCheckoutRefundMethod} options={["Cash", "Card", "Bank Transfer", "Mobile Transfer"]} />
+                      </div>
+                    )}
+                  </div>
+                  <div className="rounded-[24px] border border-indigo-200 bg-indigo-50 p-4 text-sm text-slate-800">
+                    <p><strong>After completion:</strong></p>
+                    <p>• booking will move to Checked Out</p>
+                    <p>• room will move to Cleaning</p>
+                    <p>• final payment will be recorded if entered</p>
+                    <p>• key deposit refund will be recorded if selected</p>
+                    <p>• checkout record will appear in Recent Check-Outs</p>
+                  </div>
+                  <button onClick={processCheckout} className="w-full rounded-2xl bg-slate-950 px-4 py-3 font-semibold text-white transition hover:bg-slate-800">
+                    Complete Check-Out
+                  </button>
+                </div>
+              )}
+            </aside>
+          </section>
+
+          <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="mb-4 flex items-center justify-between gap-3">
+              <div>
+                <h3 className="text-xl font-black tracking-tight">Recent Check-Outs</h3>
+                <p className="text-sm text-slate-500">Summary and record of completed check-out transactions</p>
+              </div>
+              <div className="text-right text-sm text-slate-500">
+                <p>Total Check-Outs: {checkoutReportStats.totalCheckouts}</p>
+                <p>Collected at Check-Out: {formatK(checkoutReportStats.checkoutRevenue)}</p>
+                <p>Deposits Refunded: {formatK(checkoutReportStats.refundedDeposits)}</p>
+              </div>
+            </div>
+
+            <div className="mb-4 grid gap-4 sm:grid-cols-3">
+              <PremiumStatCard label="Recent Check-Outs" value={checkoutReportStats.totalCheckouts} subtext="Completed stays" />
+              <PremiumMoneyCard label="Check-Out Revenue" value={checkoutReportStats.checkoutRevenue} subtext="Collected at checkout" />
+              <PremiumMoneyCard label="Deposit Refunds" value={checkoutReportStats.refundedDeposits} subtext="Returned to guests" />
+            </div>
+
+            <div className="space-y-4">
+              {recentCheckoutSummary.length === 0 ? (
+                <EmptyState title="No check-out records yet" text="Completed check-outs will appear here with payment and refund summary." />
+              ) : (
+                recentCheckoutSummary.slice(0, 12).map((booking) => (
+                  <div key={booking.id} className="rounded-[24px] border border-slate-200 bg-gradient-to-br from-white to-slate-50 p-4">
+                    <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
+                      <div>
+                        <h4 className="text-lg font-black">{booking.guest_name}</h4>
+                        <p className="text-sm text-slate-500">
+                          Room {booking.room_number || "-"} • Checked out {booking.check_out_date}
+                        </p>
+                      </div>
+                      <span className={`rounded-full border px-3 py-1 text-xs font-semibold ${bookingStatusStyles[booking.status]}`}>
+                        {booking.status}
+                      </span>
+                    </div>
+                    <div className="mt-4 grid gap-2 text-sm text-slate-700 sm:grid-cols-2 xl:grid-cols-4">
+                      <p>Total Stay: {formatK(booking.total_amount)}</p>
+                      <p>Total Room Paid: {formatK(booking.finalRoomPaid)}</p>
+                      <p>Final Payment: {formatK(booking.finalCheckoutPayment)}</p>
+                      <p>Balance After Check-Out: {formatK(booking.finalBalance)}</p>
+                      <p>Key Deposit Required: {formatK(booking.keyDepositRequired)}</p>
+                      <p>Key Deposit Paid: {formatK(booking.keyDepositPaid)}</p>
+                      <p>Key Deposit Refunded: {formatK(booking.keyDepositRefundedAtCheckout)}</p>
+                      <p>Deposit Status: {booking.keyDepositStatus}</p>
+                    </div>
+                    <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-3">
+                      <button onClick={() => printReceipt(booking.id)} className="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold hover:bg-slate-50">
+                        Print Summary
+                      </button>
+                      <button onClick={() => emailReceipt(booking.id)} className="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold hover:bg-slate-50">
+                        Email Summary
+                      </button>
+                      <button onClick={() => { setSelectedBookingId(booking.id); setActiveTab("bookings"); }} className="rounded-2xl border border-indigo-200 bg-white px-3 py-2 text-sm font-semibold text-indigo-700 hover:bg-indigo-50">
+                        Open Booking
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </section>
+        </section>
+
+      )}
+
       {activeTab === "payments" && (
         <section className="grid gap-6 xl:grid-cols-[380px_1fr]">
           <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
@@ -2737,7 +3091,53 @@ function printReceipt(bookingId: number) {
               </div>
             </section>
           </div>
+          <div className="grid gap-6 xl:grid-cols-2">
+            <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
+              <div className="mb-4">
+                <h3 className="text-xl font-black tracking-tight">Recent Check-Out Report</h3>
+                <p className="text-sm text-slate-500">Completed check-outs with final transaction summary</p>
+              </div>
+              <div className="space-y-3">
+                {recentCheckoutSummary.length === 0 ? (
+                  <EmptyState title="No check-out records" text="Completed check-outs will appear here for reporting." />
+                ) : (
+                  recentCheckoutSummary.slice(0, 10).map((item) => (
+                    <div key={item.id} className="rounded-[22px] border border-slate-200 bg-slate-50 p-4">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="font-black">{item.guest_name}</p>
+                          <p className="text-sm text-slate-500">Room {item.room_number || "-"} • {item.check_out_date}</p>
+                        </div>
+                        <span className={`rounded-full border px-3 py-1 text-xs font-semibold ${bookingStatusStyles[item.status]}`}>
+                          {item.status}
+                        </span>
+                      </div>
+                      <div className="mt-3 grid gap-2 text-sm text-slate-700 sm:grid-cols-2">
+                        <p>Final Payment: {formatK(item.finalCheckoutPayment)}</p>
+                        <p>Deposit Refunded: {formatK(item.keyDepositRefundedAtCheckout)}</p>
+                        <p>Total Room Paid: {formatK(item.finalRoomPaid)}</p>
+                        <p>Final Balance: {formatK(item.finalBalance)}</p>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </section>
+
+            <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
+              <div className="mb-4">
+                <h3 className="text-xl font-black tracking-tight">Check-Out Totals</h3>
+                <p className="text-sm text-slate-500">High-level summary of completed check-out transactions</p>
+              </div>
+              <div className="grid gap-4 sm:grid-cols-3">
+                <PremiumStatCard label="Total Check-Outs" value={checkoutReportStats.totalCheckouts} subtext="Completed" />
+                <PremiumMoneyCard label="Check-Out Revenue" value={checkoutReportStats.checkoutRevenue} subtext="Collected at checkout" />
+                <PremiumMoneyCard label="Deposits Refunded" value={checkoutReportStats.refundedDeposits} subtext="Returned to guests" />
+              </div>
+            </section>
+          </div>
         </section>
+
       )}
     </AppShell>
   );
@@ -2975,4 +3375,60 @@ function TextAreaField({
       />
     </div>
   );
+  async function processCheckout() {
+    try {
+      if (!checkoutBooking) {
+        showToast("Please select a checked-in booking.", "error");
+        return;
+      }
+      setBusy(true);
+      const finalPaymentAmount = Math.max(Number(checkoutFinalPayment || 0), 0);
+      let newRoomPaid = Number(checkoutBooking.roomPaid || 0);
+      if (finalPaymentAmount > 0) {
+        const { error: paymentError } = await supabase.from("motel_payments").insert({
+          booking_id: checkoutBooking.id,
+          amount: finalPaymentAmount,
+          payment_method: `Check-Out Payment - ${checkoutPaymentMethod}`,
+          payment_date: todayDate(),
+        });
+        if (paymentError) throw paymentError;
+        newRoomPaid += finalPaymentAmount;
+      }
+      const refundableKeyDeposit = Math.max(Number(checkoutBooking.keyDepositPaid || 0) - Number(checkoutBooking.keyDepositRefunded || 0), 0);
+      if (checkoutRefundKeyDeposit && refundableKeyDeposit > 0) {
+        const { error: refundError } = await supabase.from("motel_payments").insert({
+          booking_id: checkoutBooking.id,
+          amount: refundableKeyDeposit,
+          payment_method: getKeyDepositMethodLabel("refunded", checkoutRefundMethod),
+          payment_date: todayDate(),
+        });
+        if (refundError) throw refundError;
+      }
+      const newBalance = Math.max(Number(checkoutBooking.total_amount || 0) - newRoomPaid, 0);
+      const { error: bookingError } = await supabase
+        .from("motel_bookings")
+        .update({
+          status: "Checked Out",
+          deposit: newRoomPaid,
+          balance: newBalance,
+        })
+        .eq("id", checkoutBooking.id);
+      if (bookingError) throw bookingError;
+      if (checkoutBooking.room_id) {
+        const { error: roomError } = await supabase
+          .from("motel_rooms")
+          .update({ status: "Cleaning" })
+          .eq("id", checkoutBooking.room_id);
+        if (roomError) throw roomError;
+      }
+      await loadAllData();
+      setCheckoutBookingId(null);
+      showToast("Guest checked out successfully.", "success");
+      setActiveTab("checkouts");
+    } catch (error: any) {
+      showToast(error.message || "Failed to process check-out.", "error");
+    } finally {
+      setBusy(false);
+    }
+  }
 }
