@@ -52,6 +52,9 @@ type Payment = {
   amount: number;
   payment_method: string | null;
   payment_date: string | null;
+  guest_name?: string | null;
+  room_number?: string | null;
+  notes?: string | null;
   created_at?: string;
 };
 type BookingView = Booking & {
@@ -77,6 +80,19 @@ function formatK(value: number | string | null | undefined) {
   const amount = Number(value || 0);
   return `K${amount.toLocaleString()}`;
 }
+function formatInvoiceNumber(value: number | string | null | undefined) {
+  return `INV-${String(value || 0).padStart(6, "0")}`;
+}
+function formatReceiptNumber(value: number | string | null | undefined) {
+  return `RCPT-${String(value || 0).padStart(6, "0")}`;
+}
+function getInvoiceStatus(booking: any) {
+  const due = Number(booking?.due || 0);
+  const paid = Number(booking?.roomPaid || 0);
+  if (paid <= 0) return "Unpaid";
+  if (due > 0) return "Part Paid";
+  return "Paid";
+}
 const KEY_DEPOSIT_RECEIVED_PREFIX = "Key Deposit Received";
 const KEY_DEPOSIT_REFUNDED_PREFIX = "Key Deposit Refunded";
 function getKeyDepositRequiredByRoomType(roomType: string | null | undefined) {
@@ -87,16 +103,19 @@ function getKeyDepositRequiredByRoomType(roomType: string | null | undefined) {
   return 0;
 }
 function isKeyDepositReceivedPayment(payment: Payment) {
-  return String(payment.payment_method || "").startsWith(KEY_DEPOSIT_RECEIVED_PREFIX);
+  const label = `${payment.payment_method || ""} ${payment.notes || ""}`;
+  return label.includes(KEY_DEPOSIT_RECEIVED_PREFIX);
 }
 function isKeyDepositRefundPayment(payment: Payment) {
-  return String(payment.payment_method || "").startsWith(KEY_DEPOSIT_REFUNDED_PREFIX);
+  const label = `${payment.payment_method || ""} ${payment.notes || ""}`;
+  return label.includes(KEY_DEPOSIT_REFUNDED_PREFIX);
 }
 function isRoomRevenuePayment(payment: Payment) {
   return !isKeyDepositReceivedPayment(payment) && !isKeyDepositRefundPayment(payment);
 }
 function isCheckOutPayment(payment: Payment) {
-  return String(payment.payment_method || "").startsWith("Check-Out Payment -");
+  const label = `${payment.payment_method || ""} ${payment.notes || ""}`;
+  return label.includes("Check-Out Payment");
 }
 function getKeyDepositMethodLabel(action: "received" | "refunded", method: string) {
   return `${action === "received" ? KEY_DEPOSIT_RECEIVED_PREFIX : KEY_DEPOSIT_REFUNDED_PREFIX} - ${method}`;
@@ -166,15 +185,6 @@ function AppShell({
   onSignOut,
   userEmail,
 }: any) {
-  const tabs = [
-    { key: "dashboard", label: "Home", icon: "🏠" },
-    { key: "rooms", label: "Rooms", icon: "🛏️" },
-    { key: "bookings", label: "Bookings", icon: "📘" },
-    { key: "checkouts", label: "Check-Out", icon: "✅" },
-    { key: "payments", label: "Payments", icon: "💳" },
-    { key: "reports", label: "Reports", icon: "📊" },
-  ];
-
   return (
     <main className="min-h-screen bg-slate-100 text-slate-900">
       <div className="flex min-h-screen">
@@ -207,67 +217,28 @@ function AppShell({
             </button>
           </div>
         </aside>
-
         <div className="flex-1">
-          <header className="sticky top-0 z-40 border-b border-slate-200 bg-white/95 px-4 py-3 shadow-sm backdrop-blur sm:px-6">
-            <div className="flex flex-col gap-3">
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.25em] text-indigo-600">
-                    Live Motel Operations
-                  </p>
-                  <h2 className="mt-1 truncate text-2xl font-black tracking-tight text-slate-900 sm:text-3xl">{title}</h2>
-                  <p className="mt-1 hidden text-sm text-slate-500 sm:block">{subtitle}</p>
-                </div>
-                <button
-                  onClick={onSignOut}
-                  className="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 lg:hidden"
-                >
-                  Sign Out
-                </button>
+          <header className="border-b border-slate-200 bg-white/90 px-4 py-4 shadow-sm backdrop-blur sm:px-6">
+            <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.25em] text-indigo-600">
+                  Live Motel Operations
+                </p>
+                <h2 className="mt-1 text-3xl font-black tracking-tight text-slate-900">{title}</h2>
+                <p className="mt-1 text-sm text-slate-500">{subtitle}</p>
               </div>
-
-              <div className="lg:hidden">
-                <div className="no-scrollbar -mx-1 flex gap-2 overflow-x-auto px-1 pb-1">
-                  {tabs.map((tab) => (
-                    <button
-                      key={tab.key}
-                      onClick={() => setActiveTab(tab.key)}
-                      className={`whitespace-nowrap rounded-2xl px-3 py-2 text-sm font-semibold transition ${
-                        activeTab === tab.key
-                          ? "bg-slate-950 text-white shadow-sm"
-                          : "bg-slate-100 text-slate-700"
-                      }`}
-                    >
-                      <span className="mr-1">{tab.icon}</span>
-                      {tab.label}
-                    </button>
-                  ))}
-                </div>
+              <div className="flex flex-wrap gap-2 lg:hidden">
+                <MobileTabButton label="Dashboard" active={activeTab === "dashboard"} onClick={() => setActiveTab("dashboard")} />
+                <MobileTabButton label="Rooms" active={activeTab === "rooms"} onClick={() => setActiveTab("rooms")} />
+                <MobileTabButton label="Bookings" active={activeTab === "bookings"} onClick={() => setActiveTab("bookings")} />
+                <MobileTabButton label="Check-Out" active={activeTab === "checkouts"} onClick={() => setActiveTab("checkouts")} />
+                <MobileTabButton label="Guests" active={activeTab === "guests"} onClick={() => setActiveTab("guests")} />
+                <MobileTabButton label="Payments" active={activeTab === "payments"} onClick={() => setActiveTab("payments")} />
+                <MobileTabButton label="Reports" active={activeTab === "reports"} onClick={() => setActiveTab("reports")} />
               </div>
             </div>
           </header>
-
-          <div className="p-4 pb-24 sm:p-6 sm:pb-28 lg:pb-6">{children}</div>
-
-          <nav className="fixed inset-x-0 bottom-0 z-50 border-t border-slate-200 bg-white/95 px-2 py-2 backdrop-blur lg:hidden">
-            <div className="grid grid-cols-6 gap-1">
-              {tabs.map((tab) => (
-                <button
-                  key={tab.key}
-                  onClick={() => setActiveTab(tab.key)}
-                  className={`flex flex-col items-center justify-center rounded-2xl px-1 py-2 text-[11px] font-semibold transition ${
-                    activeTab === tab.key
-                      ? "bg-slate-950 text-white"
-                      : "text-slate-600"
-                  }`}
-                >
-                  <span className="text-base leading-none">{tab.icon}</span>
-                  <span className="mt-1 leading-none">{tab.label}</span>
-                </button>
-              ))}
-            </div>
-          </nav>
+          <div className="p-4 sm:p-6">{children}</div>
         </div>
       </div>
     </main>
@@ -377,10 +348,10 @@ export default function MotelSupabasePremiumPage() {
     try {
       if (showLoader) setLoading(true);
       const [roomsRes, guestsRes, bookingsRes, paymentsRes] = await Promise.all([
-        supabase.from("motel_rooms").select("*").order("room_number", { ascending: true }),
-        supabase.from("motel_guests").select("*").order("id", { ascending: false }),
-        supabase.from("motel_bookings").select("*").order("id", { ascending: false }),
-        supabase.from("motel_payments").select("*").order("id", { ascending: false }),
+        supabase.from("rooms").select("*").order("room_number", { ascending: true }),
+        supabase.from("guests").select("*").order("id", { ascending: false }),
+        supabase.from("bookings").select("*").order("id", { ascending: false }),
+        supabase.from("payments").select("*").order("id", { ascending: false }),
       ]);
       if (roomsRes.error) throw roomsRes.error;
       if (guestsRes.error) throw guestsRes.error;
@@ -450,6 +421,19 @@ export default function MotelSupabasePremiumPage() {
       };
     });
   }, [bookings, payments, rooms, guests]);
+
+  const outstandingInvoices = useMemo(() => {
+    return bookingViews
+      .filter((booking) => Number(booking.due || 0) > 0 && booking.status !== "Cancelled")
+      .map((booking) => ({
+        ...booking,
+        invoiceNumber: formatInvoiceNumber(booking.id),
+        invoiceStatus: getInvoiceStatus(booking),
+        amountDue: Number(booking.due || 0),
+        issueDate: booking.created_at ? String(booking.created_at).split("T")[0] : todayDate(),
+      }))
+      .sort((a, b) => Number(b.amountDue || 0) - Number(a.amountDue || 0));
+  }, [bookingViews]);
   const selectedBooking = useMemo(
     () => bookingViews.find((booking) => booking.id === selectedBookingId) || null,
     [bookingViews, selectedBookingId]
@@ -832,7 +816,7 @@ export default function MotelSupabasePremiumPage() {
       setBusy(true);
       if (editingRoomId) {
         const { error } = await supabase
-          .from("motel_rooms")
+          .from("rooms")
           .update({
             room_number: roomForm.room_number.trim(),
             room_type: roomForm.room_type,
@@ -845,7 +829,7 @@ export default function MotelSupabasePremiumPage() {
         if (error) throw error;
         showToast("Room updated successfully.", "success");
       } else {
-        const { error } = await supabase.from("motel_rooms").insert({
+        const { error } = await supabase.from("rooms").insert({
           room_number: roomForm.room_number.trim(),
           room_type: roomForm.room_type,
           price: Number(roomForm.price || 0),
@@ -869,7 +853,7 @@ export default function MotelSupabasePremiumPage() {
     if (!window.confirm("Delete this room?")) return;
     try {
       setBusy(true);
-      const { error } = await supabase.from("motel_rooms").delete().eq("id", roomId);
+      const { error } = await supabase.from("rooms").delete().eq("id", roomId);
       if (error) throw error;
       if (editingRoomId === roomId) resetRoomForm();
       await loadAllData();
@@ -884,7 +868,7 @@ export default function MotelSupabasePremiumPage() {
     try {
       setBusy(true);
       const { error } = await supabase
-        .from("motel_rooms")
+        .from("rooms")
         .update({ status })
         .eq("id", roomId);
       if (error) throw error;
@@ -913,13 +897,13 @@ export default function MotelSupabasePremiumPage() {
       };
       if (editingGuestId) {
         const { error } = await supabase
-          .from("motel_guests")
+          .from("guests")
           .update(payload)
           .eq("id", editingGuestId);
         if (error) throw error;
         showToast("Guest updated successfully.", "success");
       } else {
-        const { error } = await supabase.from("motel_guests").insert(payload);
+        const { error } = await supabase.from("guests").insert(payload);
         if (error) throw error;
         showToast("Guest saved successfully.", "success");
       }
@@ -936,7 +920,7 @@ export default function MotelSupabasePremiumPage() {
     if (!window.confirm("Delete this guest?")) return;
     try {
       setBusy(true);
-      const { error } = await supabase.from("motel_guests").delete().eq("id", guestId);
+      const { error } = await supabase.from("guests").delete().eq("id", guestId);
       if (error) throw error;
       if (editingGuestId === guestId) resetGuestForm();
       await loadAllData();
@@ -978,12 +962,16 @@ export default function MotelSupabasePremiumPage() {
         const paidAlready = currentBooking?.paid || 0;
         const finalBalance = Math.max(bookingTotal - paidAlready, 0);
         const { error: bookingError } = await supabase
-          .from("motel_bookings")
+          .from("bookings")
           .update({
             guest_name: bookingForm.guest_name.trim(),
             phone: bookingForm.phone || null,
             room_id: selectedRoom.id,
             room_number: selectedRoom.room_number,
+            room_type: selectedRoom.room_type,
+            billing_type: selectedRoom.billing_type,
+            nights_or_months: bookingDuration,
+            rate: bookingRate,
             check_in_date: bookingForm.check_in_date,
             check_out_date: bookingForm.check_out_date,
             total_amount: bookingTotal,
@@ -994,19 +982,23 @@ export default function MotelSupabasePremiumPage() {
           .eq("id", editingBookingId);
         if (bookingError) throw bookingError;
         const { error: roomError } = await supabase
-          .from("motel_rooms")
+          .from("rooms")
           .update({ status: getRoomStatusFromBooking(bookingForm.status) })
           .eq("id", selectedRoom.id);
         if (roomError) throw roomError;
         showToast("Booking updated successfully.", "success");
       } else {
         const { data: bookingData, error: bookingError } = await supabase
-          .from("motel_bookings")
+          .from("bookings")
           .insert({
             guest_name: bookingForm.guest_name.trim(),
             phone: bookingForm.phone || null,
             room_id: selectedRoom.id,
             room_number: selectedRoom.room_number,
+            room_type: selectedRoom.room_type,
+            billing_type: selectedRoom.billing_type,
+            nights_or_months: bookingDuration,
+            rate: bookingRate,
             check_in_date: bookingForm.check_in_date,
             check_out_date: bookingForm.check_out_date,
             total_amount: bookingTotal,
@@ -1019,7 +1011,7 @@ export default function MotelSupabasePremiumPage() {
         if (bookingError) throw bookingError;
         const roomStatus = getRoomStatusFromBooking(bookingForm.status);
         const { error: roomError } = await supabase
-          .from("motel_rooms")
+          .from("rooms")
           .update({ status: roomStatus })
           .eq("id", selectedRoom.id);
         if (roomError) throw roomError;
@@ -1029,7 +1021,7 @@ export default function MotelSupabasePremiumPage() {
             (guest.phone || "") === (bookingForm.phone || "")
         );
         if (!existingGuest) {
-          await supabase.from("motel_guests").insert({
+          await supabase.from("guests").insert({
             full_name: bookingForm.guest_name.trim(),
             phone: bookingForm.phone || null,
             notes: bookingForm.notes
@@ -1038,11 +1030,14 @@ export default function MotelSupabasePremiumPage() {
           });
         }
         if (Number(bookingForm.deposit) > 0 && bookingData?.id) {
-          const { error: paymentError } = await supabase.from("motel_payments").insert({
+          const { error: paymentError } = await supabase.from("payments").insert({
             booking_id: bookingData.id,
+            guest_name: bookingForm.guest_name.trim(),
+            room_number: selectedRoom.room_number,
             amount: Number(bookingForm.deposit),
             payment_method: bookingForm.deposit_method || "Cash",
             payment_date: todayDate(),
+            notes: "Initial booking deposit",
           });
           if (paymentError) throw paymentError;
         }
@@ -1061,12 +1056,12 @@ export default function MotelSupabasePremiumPage() {
     if (!window.confirm("Delete this booking?")) return;
     try {
       setBusy(true);
-      const { error: paymentError } = await supabase.from("motel_payments").delete().eq("booking_id", bookingId);
+      const { error: paymentError } = await supabase.from("payments").delete().eq("booking_id", bookingId);
       if (paymentError) throw paymentError;
-      const { error } = await supabase.from("motel_bookings").delete().eq("id", bookingId);
+      const { error } = await supabase.from("bookings").delete().eq("id", bookingId);
       if (error) throw error;
       if (roomId) {
-        await supabase.from("motel_rooms").update({ status: "Available" }).eq("id", roomId);
+        await supabase.from("rooms").update({ status: "Available" }).eq("id", roomId);
       }
       if (editingBookingId === bookingId) resetBookingForm();
       if (selectedBookingId === bookingId) setSelectedBookingId(null);
@@ -1083,7 +1078,7 @@ export default function MotelSupabasePremiumPage() {
       setBusy(true);
       const currentBooking = bookingViews.find((item) => item.id === bookingId);
       const { error: bookingError } = await supabase
-        .from("motel_bookings")
+        .from("bookings")
         .update({
           status,
           balance: Math.max(Number(currentBooking?.total_amount || 0) - Number(currentBooking?.paid || 0), 0),
@@ -1093,7 +1088,7 @@ export default function MotelSupabasePremiumPage() {
       if (bookingError) throw bookingError;
       if (roomId) {
         const { error: roomError } = await supabase
-          .from("motel_rooms")
+          .from("rooms")
           .update({ status: getRoomStatusFromBooking(status) })
           .eq("id", roomId);
         if (roomError) throw roomError;
@@ -1123,9 +1118,11 @@ export default function MotelSupabasePremiumPage() {
         const oldPayment = payments.find((item) => item.id === editingPaymentId);
         const oldAmount = Number(oldPayment?.amount || 0);
         const { error: paymentError } = await supabase
-          .from("motel_payments")
+          .from("payments")
           .update({
             booking_id: booking.id,
+            guest_name: booking.guest_name,
+            room_number: booking.room_number || "-",
             amount: Number(paymentForm.amount),
             payment_method: paymentForm.payment_method || "Cash",
             payment_date: paymentForm.payment_date || todayDate(),
@@ -1135,11 +1132,14 @@ export default function MotelSupabasePremiumPage() {
         adjustment = Number(paymentForm.amount) - oldAmount;
         showToast("Payment updated successfully.", "success");
       } else {
-        const { error: paymentError } = await supabase.from("motel_payments").insert({
+        const { error: paymentError } = await supabase.from("payments").insert({
           booking_id: booking.id,
+          guest_name: booking.guest_name,
+          room_number: booking.room_number || "-",
           amount: Number(paymentForm.amount),
           payment_method: paymentForm.payment_method || "Cash",
           payment_date: paymentForm.payment_date || todayDate(),
+          notes: "Room payment",
         });
         if (paymentError) throw paymentError;
         showToast("Payment recorded successfully.", "success");
@@ -1147,7 +1147,7 @@ export default function MotelSupabasePremiumPage() {
       const newPaid = booking.paid + adjustment;
       const newBalance = Math.max(Number(booking.total_amount || 0) - newPaid, 0);
       const { error: bookingError } = await supabase
-        .from("motel_bookings")
+        .from("bookings")
         .update({
           deposit: newPaid,
           balance: newBalance,
@@ -1169,13 +1169,13 @@ export default function MotelSupabasePremiumPage() {
       setBusy(true);
       const payment = payments.find((item) => item.id === paymentId);
       const booking = bookingViews.find((item) => item.id === bookingId);
-      const { error } = await supabase.from("motel_payments").delete().eq("id", paymentId);
+      const { error } = await supabase.from("payments").delete().eq("id", paymentId);
       if (error) throw error;
       if (booking) {
         const newPaid = Math.max(Number(booking.paid || 0) - Number(payment?.amount || 0), 0);
         const newBalance = Math.max(Number(booking.total_amount || 0) - newPaid, 0);
         await supabase
-          .from("motel_bookings")
+          .from("bookings")
           .update({
             deposit: newPaid,
             balance: newBalance,
@@ -1220,11 +1220,14 @@ export default function MotelSupabasePremiumPage() {
         "Cash"
       ) || "Cash";
       setBusy(true);
-      const { error } = await supabase.from("motel_payments").insert({
+      const { error } = await supabase.from("payments").insert({
         booking_id: booking.id,
+        guest_name: booking.guest_name,
+        room_number: booking.room_number || "-",
         amount: finalAmount,
-        payment_method: getKeyDepositMethodLabel(action, method),
+        payment_method: method,
         payment_date: todayDate(),
+        notes: getKeyDepositMethodLabel(action, method),
       });
       if (error) throw error;
       await loadAllData();
@@ -1279,6 +1282,151 @@ export default function MotelSupabasePremiumPage() {
     ].join("\n");
     window.location.href = `mailto:${encodeURIComponent(to)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
   }
+  function printInvoice(bookingId: number) {
+    const booking = bookingViews.find((item) => item.id === bookingId);
+    if (!booking) {
+      showToast("Booking not found.", "error");
+      return;
+    }
+    const guest = guests.find(
+      (item) =>
+        normalize(item.full_name) === normalize(booking.guest_name) &&
+        normalize(item.phone) === normalize(booking.phone)
+    ) || guests.find((item) => normalize(item.full_name) === normalize(booking.guest_name));
+    const invoiceWindow = window.open("", "_blank", "width=900,height=700");
+    if (!invoiceWindow) {
+      showToast("Pop-up blocked. Allow pop-ups to print invoice.", "error");
+      return;
+    }
+    invoiceWindow.document.write(`
+      <html>
+        <head>
+          <title>${RECEIPT_BUSINESS.name} Invoice - ${booking.guest_name}</title>
+        </head>
+        <body style="font-family:Arial,sans-serif;background:#f8fafc;padding:24px;color:#0f172a;">
+          <div style="max-width:820px;margin:0 auto;background:#fff;border:1px solid #dbe3ef;border-radius:20px;padding:28px;">
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:20px;">
+              <div style="display:flex;gap:14px;">
+                <img src="${RECEIPT_BUSINESS.logo}" alt="Logo" style="width:68px;height:68px;object-fit:contain;border-radius:12px;border:1px solid #dbe3ef;background:#fff;padding:4px;" />
+                <div>
+                  <div style="font-size:12px;font-weight:700;letter-spacing:2px;color:#4f46e5;text-transform:uppercase;">Tax / Service Invoice</div>
+                  <h1 style="margin:8px 0 4px;font-size:30px;">${RECEIPT_BUSINESS.name}</h1>
+                  <p style="margin:0;color:#475569;">${RECEIPT_BUSINESS.organization}</p>
+                  <p style="margin:6px 0 0;color:#475569;">${RECEIPT_BUSINESS.address1}</p>
+                  <p style="margin:4px 0 0;color:#475569;">${RECEIPT_BUSINESS.address2}</p>
+                  <p style="margin:4px 0 0;color:#475569;">Office/Mobile: ${RECEIPT_BUSINESS.phones}</p>
+                  <p style="margin:4px 0 0;color:#475569;">Website: ${RECEIPT_BUSINESS.website}</p>
+                </div>
+              </div>
+              <div style="text-align:right;">
+                <div style="font-size:12px;color:#64748b;">Invoice Number</div>
+                <div style="font-size:18px;font-weight:800;">${formatInvoiceNumber(booking.id)}</div>
+                <div style="margin-top:10px;font-size:12px;color:#64748b;">Issue Date</div>
+                <div style="font-size:16px;font-weight:700;">${booking.created_at ? String(booking.created_at).slice(0,10) : todayDate()}</div>
+              </div>
+            </div>
+
+            <div style="margin-top:24px;display:grid;grid-template-columns:1fr 1fr;gap:18px;">
+              <div style="padding:16px;border:1px solid #dbe3ef;border-radius:14px;background:#f8fafc;">
+                <div style="font-size:12px;color:#64748b;text-transform:uppercase;">Bill To</div>
+                <div style="margin-top:8px;font-size:18px;font-weight:700;">${booking.guest_name}</div>
+                <div style="margin-top:6px;color:#475569;">Phone: ${booking.phone || "-"}</div>
+                <div style="margin-top:6px;color:#475569;">Email: ${guest?.email || booking.guestEmail || "-"}</div>
+              </div>
+              <div style="padding:16px;border:1px solid #dbe3ef;border-radius:14px;background:#f8fafc;">
+                <div style="font-size:12px;color:#64748b;text-transform:uppercase;">Stay Details</div>
+                <div style="margin-top:8px;color:#475569;">Room: ${booking.room_number || "-"}</div>
+                <div style="margin-top:6px;color:#475569;">Room Type: ${booking.room?.room_type || "-"}</div>
+                <div style="margin-top:6px;color:#475569;">Stay Period: ${booking.check_in_date} to ${booking.check_out_date}</div>
+                <div style="margin-top:6px;color:#475569;">Status: ${booking.status}</div>
+              </div>
+            </div>
+
+            <div style="margin-top:24px;">
+              <table style="width:100%;border-collapse:collapse;">
+                <thead>
+                  <tr style="background:#eef2ff;">
+                    <th style="padding:10px;border:1px solid #dbe3ef;text-align:left;">Description</th>
+                    <th style="padding:10px;border:1px solid #dbe3ef;text-align:right;">Amount</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td style="padding:10px;border:1px solid #dbe3ef;">Accommodation Charges</td>
+                    <td style="padding:10px;border:1px solid #dbe3ef;text-align:right;">${formatK(booking.total_amount)}</td>
+                  </tr>
+                  <tr>
+                    <td style="padding:10px;border:1px solid #dbe3ef;">Payments Received To Date</td>
+                    <td style="padding:10px;border:1px solid #dbe3ef;text-align:right;">-${formatK(booking.roomPaid)}</td>
+                  </tr>
+                  <tr>
+                    <td style="padding:10px;border:1px solid #dbe3ef;">Outstanding Amount</td>
+                    <td style="padding:10px;border:1px solid #dbe3ef;text-align:right;font-weight:800;">${formatK(booking.due)}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div style="margin-top:24px;display:grid;grid-template-columns:1fr 1fr;gap:18px;">
+              <div style="padding:16px;border:1px solid #dbe3ef;border-radius:14px;">
+                <div style="font-size:12px;color:#64748b;text-transform:uppercase;">Invoice Status</div>
+                <div style="margin-top:8px;font-size:20px;font-weight:800;">${getInvoiceStatus(booking)}</div>
+              </div>
+              <div style="padding:16px;border:1px solid #dbe3ef;border-radius:14px;background:#f8fafc;">
+                <div style="display:flex;justify-content:space-between;margin-bottom:8px;"><span>Total Charges</span><strong>${formatK(booking.total_amount)}</strong></div>
+                <div style="display:flex;justify-content:space-between;margin-bottom:8px;"><span>Paid</span><strong>${formatK(booking.roomPaid)}</strong></div>
+                <div style="display:flex;justify-content:space-between;font-size:18px;font-weight:800;"><span>Balance Due</span><strong>${formatK(booking.due)}</strong></div>
+              </div>
+            </div>
+
+            <div style="margin-top:24px;padding-top:16px;border-top:1px solid #dbe3ef;text-align:center;color:#64748b;font-size:13px;">
+              Please quote invoice number ${formatInvoiceNumber(booking.id)} when making payment.
+            </div>
+          </div>
+          <script>window.onload=function(){window.print();};</script>
+        </body>
+      </html>
+    `);
+    invoiceWindow.document.close();
+  }
+  function openEmailInvoice(bookingId: number) {
+    const booking = bookingViews.find((item) => item.id === bookingId);
+    if (!booking) {
+      showToast("Booking not found.", "error");
+      return;
+    }
+    const guest = guests.find(
+      (item) =>
+        normalize(item.full_name) === normalize(booking.guest_name) &&
+        normalize(item.phone) === normalize(booking.phone)
+    ) || guests.find((item) => normalize(item.full_name) === normalize(booking.guest_name));
+    const to = guest?.email || booking.guestEmail || "";
+    if (!to) {
+      showToast("No guest email found for this booking.", "error");
+      return;
+    }
+    const subject = `${RECEIPT_BUSINESS.name} Invoice ${formatInvoiceNumber(booking.id)} - ${booking.guest_name}`;
+    const body = [
+      `${RECEIPT_BUSINESS.name}`,
+      `${RECEIPT_BUSINESS.organization}`,
+      `${RECEIPT_BUSINESS.address1}`,
+      `${RECEIPT_BUSINESS.address2}`,
+      `Office/Mobile: ${RECEIPT_BUSINESS.phones}`,
+      `Website: ${RECEIPT_BUSINESS.website}`,
+      "",
+      `Invoice Number: ${formatInvoiceNumber(booking.id)}`,
+      `Guest: ${booking.guest_name}`,
+      `Room: ${booking.room_number || "-"}`,
+      `Stay Period: ${booking.check_in_date} to ${booking.check_out_date}`,
+      `Total Charges: ${formatK(booking.total_amount)}`,
+      `Payments Received: ${formatK(booking.roomPaid)}`,
+      `Outstanding Balance: ${formatK(booking.due)}`,
+      `Invoice Status: ${getInvoiceStatus(booking)}`,
+      "",
+      `Please quote invoice number ${formatInvoiceNumber(booking.id)} when making payment.`,
+    ].join("\n");
+    window.location.href = `mailto:${encodeURIComponent(to)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+  }
   async function processCheckout() {
     try {
       if (!checkoutBooking) {
@@ -1289,28 +1437,34 @@ export default function MotelSupabasePremiumPage() {
       const finalPaymentAmount = Math.max(Number(checkoutFinalPayment || 0), 0);
       let newRoomPaid = Number(checkoutBooking.roomPaid || 0);
       if (finalPaymentAmount > 0) {
-        const { error: paymentError } = await supabase.from("motel_payments").insert({
+        const { error: paymentError } = await supabase.from("payments").insert({
           booking_id: checkoutBooking.id,
+          guest_name: checkoutBooking.guest_name,
+          room_number: checkoutBooking.room_number || "-",
           amount: finalPaymentAmount,
-          payment_method: `Check-Out Payment - ${checkoutPaymentMethod}`,
+          payment_method: checkoutPaymentMethod,
           payment_date: todayDate(),
+          notes: `Check-Out Payment - ${checkoutPaymentMethod}`,
         });
         if (paymentError) throw paymentError;
         newRoomPaid += finalPaymentAmount;
       }
       const refundableKeyDeposit = Math.max(Number(checkoutBooking.keyDepositPaid || 0) - Number(checkoutBooking.keyDepositRefunded || 0), 0);
       if (checkoutRefundKeyDeposit && refundableKeyDeposit > 0) {
-        const { error: refundError } = await supabase.from("motel_payments").insert({
+        const { error: refundError } = await supabase.from("payments").insert({
           booking_id: checkoutBooking.id,
+          guest_name: checkoutBooking.guest_name,
+          room_number: checkoutBooking.room_number || "-",
           amount: refundableKeyDeposit,
-          payment_method: getKeyDepositMethodLabel("refunded", checkoutRefundMethod),
+          payment_method: checkoutRefundMethod,
           payment_date: todayDate(),
+          notes: getKeyDepositMethodLabel("refunded", checkoutRefundMethod),
         });
         if (refundError) throw refundError;
       }
       const newBalance = Math.max(Number(checkoutBooking.total_amount || 0) - newRoomPaid, 0);
       const { error: bookingError } = await supabase
-        .from("motel_bookings")
+        .from("bookings")
         .update({
           status: "Checked Out",
           deposit: newRoomPaid,
@@ -1320,7 +1474,7 @@ export default function MotelSupabasePremiumPage() {
       if (bookingError) throw bookingError;
       if (checkoutBooking.room_id) {
         const { error: roomError } = await supabase
-          .from("motel_rooms")
+          .from("rooms")
           .update({ status: "Cleaning" })
           .eq("id", checkoutBooking.room_id);
         if (roomError) throw roomError;
@@ -2333,10 +2487,7 @@ function printReceipt(bookingId: number) {
               </div>
             </section>
           </section>
-          <aside className={`${
-            selectedBooking ? "fixed inset-0 z-50 bg-slate-100 p-4 overflow-y-auto" : "hidden"
-          } rounded-[28px] lg:static lg:block lg:bg-transparent lg:p-0 lg:overflow-visible`}>
-            <div className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm min-h-full">
+          <aside className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
             <div className="mb-4 flex items-center justify-between gap-3">
               <div>
                 <h3 className="text-xl font-black tracking-tight">Booking Details</h3>
@@ -2380,7 +2531,7 @@ function printReceipt(bookingId: number) {
                     <p><strong>Key Deposit Held:</strong> {formatK(selectedBooking.keyDepositPaid - selectedBooking.keyDepositRefunded)}</p>
                     <p><strong>Created:</strong> {String(selectedBooking.created_at || "-").slice(0, 10)}</p>
                   </div>
-                  <div className="mt-4 grid grid-cols-4 gap-2">
+                  <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
                     <button
                       onClick={() => printReceipt(selectedBooking.id)}
                       className="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold hover:bg-slate-50"
@@ -2394,10 +2545,53 @@ function printReceipt(bookingId: number) {
                       Email Receipt
                     </button>
                     <button
+                      onClick={() => {
+                        setPaymentForm((prev) => ({
+                          ...prev,
+                          booking_id: selectedBooking.id,
+                          amount: Number(selectedBooking.due || 0),
+                          payment_date: todayDate(),
+                        }));
+                        setActiveTab("payments");
+                      }}
+                      className="rounded-2xl border border-indigo-200 bg-indigo-50 px-3 py-2 text-sm font-semibold text-indigo-700 hover:bg-indigo-100"
+                    >
+                      Add Payment
+                    </button>
+                    <button
                       onClick={() => startEditBooking(selectedBooking)}
                       className="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold hover:bg-slate-50"
                     >
                       Edit Booking
+                    </button>
+                  </div>
+                </div>
+                <div className="rounded-[24px] border border-slate-200 bg-slate-50 p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <h4 className="text-lg font-black">Invoice Summary</h4>
+                    <span className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700">
+                      {getInvoiceStatus(selectedBooking)}
+                    </span>
+                  </div>
+                  <div className="mt-3 grid gap-3 text-sm text-slate-700">
+                    <p><strong>Invoice Number:</strong> {formatInvoiceNumber(selectedBooking.id)}</p>
+                    <p><strong>Issue Date:</strong> {selectedBooking.created_at ? String(selectedBooking.created_at).slice(0, 10) : todayDate()}</p>
+                    <p><strong>Total Charges:</strong> {formatK(selectedBooking.total_amount)}</p>
+                    <p><strong>Payments Received:</strong> {formatK(selectedBooking.roomPaid)}</p>
+                    <p><strong>Outstanding Balance:</strong> {formatK(selectedBooking.due)}</p>
+                  </div>
+                  <div className="mt-4 grid grid-cols-2 gap-2">
+                    <button
+                      onClick={() => printInvoice(selectedBooking.id)}
+                      className="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold hover:bg-slate-50"
+                    >
+                      Print Invoice
+                    </button>
+                    <button
+                      onClick={() => openEmailInvoice(selectedBooking.id)}
+                      className="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold hover:bg-slate-50"
+                    >
+                      Email Invoice
                     </button>
                   </div>
                 </div>
@@ -2456,7 +2650,23 @@ function printReceipt(bookingId: number) {
                   </div>
                 </div>
                 <div className="rounded-[24px] border border-slate-200 bg-slate-50 p-4">
-                  <h4 className="text-lg font-black">Payment History</h4>
+                  <div className="flex items-center justify-between gap-3">
+                    <h4 className="text-lg font-black">Payment History</h4>
+                    <button
+                      onClick={() => {
+                        setPaymentForm((prev) => ({
+                          ...prev,
+                          booking_id: selectedBooking.id,
+                          amount: Number(selectedBooking.due || 0),
+                          payment_date: todayDate(),
+                        }));
+                        setActiveTab("payments");
+                      }}
+                      className="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold hover:bg-slate-50"
+                    >
+                      Add Payment
+                    </button>
+                  </div>
                   <div className="mt-3 space-y-3">
                     {selectedBookingPayments.length === 0 ? (
                       <p className="text-sm text-slate-500">No payment recorded yet for this booking.</p>
@@ -2467,6 +2677,7 @@ function printReceipt(bookingId: number) {
                             <div>
                               <p className="font-semibold text-slate-800">{payment.payment_method || "Unknown method"}</p>
                               <p className="text-sm text-slate-500">{payment.payment_date || "-"}</p>
+                              <p className="text-xs text-slate-400">Receipt {formatReceiptNumber(payment.id)} • Invoice {formatInvoiceNumber(selectedBooking.id)}</p>
                             </div>
                             <p className="font-black text-slate-900">{formatK(payment.amount)}</p>
                           </div>
@@ -2477,7 +2688,6 @@ function printReceipt(bookingId: number) {
                 </div>
               </div>
             )}
-            </div>
           </aside>
         </section>
       )}
@@ -3085,6 +3295,56 @@ function printReceipt(bookingId: number) {
             </section>
             <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
               <div className="mb-4">
+                <h3 className="text-xl font-black tracking-tight">Outstanding Invoices</h3>
+                <p className="text-sm text-slate-500">Accounts receivable and unpaid balances</p>
+              </div>
+              <div className="space-y-3">
+                {outstandingInvoices.length === 0 ? (
+                  <EmptyState title="No outstanding invoices" text="All invoices are fully paid." />
+                ) : (
+                  outstandingInvoices.slice(0, 12).map((invoice) => (
+                    <div
+                      key={invoice.id}
+                      className="rounded-[24px] border border-slate-200 bg-gradient-to-br from-white to-slate-50 p-4"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="font-black">{invoice.guest_name}</p>
+                          <p className="text-sm text-slate-500">
+                            {invoice.invoiceNumber} • Room {invoice.room_number || "-"}
+                          </p>
+                        </div>
+                        <span className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700">
+                          {invoice.invoiceStatus}
+                        </span>
+                      </div>
+                      <div className="mt-3 grid gap-2 text-sm text-slate-700 sm:grid-cols-2">
+                        <p>Total Charges: {formatK(invoice.total_amount)}</p>
+                        <p>Paid: {formatK(invoice.roomPaid)}</p>
+                        <p className="font-bold">Balance Due: {formatK(invoice.amountDue)}</p>
+                        <p>Issue Date: {invoice.issueDate}</p>
+                      </div>
+                      <div className="mt-4 grid grid-cols-2 gap-2">
+                        <button
+                          onClick={() => printInvoice(invoice.id)}
+                          className="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold hover:bg-slate-50"
+                        >
+                          Print Invoice
+                        </button>
+                        <button
+                          onClick={() => openEmailInvoice(invoice.id)}
+                          className="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold hover:bg-slate-50"
+                        >
+                          Email Invoice
+                        </button>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </section>
+            <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
+              <div className="mb-4">
                 <h3 className="text-xl font-black tracking-tight">Recent Payments in Range</h3>
                 <p className="text-sm text-slate-500">Latest collected payments for selected dates</p>
               </div>
@@ -3407,28 +3667,34 @@ function TextAreaField({
       const finalPaymentAmount = Math.max(Number(checkoutFinalPayment || 0), 0);
       let newRoomPaid = Number(checkoutBooking.roomPaid || 0);
       if (finalPaymentAmount > 0) {
-        const { error: paymentError } = await supabase.from("motel_payments").insert({
+        const { error: paymentError } = await supabase.from("payments").insert({
           booking_id: checkoutBooking.id,
+          guest_name: checkoutBooking.guest_name,
+          room_number: checkoutBooking.room_number || "-",
           amount: finalPaymentAmount,
-          payment_method: `Check-Out Payment - ${checkoutPaymentMethod}`,
+          payment_method: checkoutPaymentMethod,
           payment_date: todayDate(),
+          notes: `Check-Out Payment - ${checkoutPaymentMethod}`,
         });
         if (paymentError) throw paymentError;
         newRoomPaid += finalPaymentAmount;
       }
       const refundableKeyDeposit = Math.max(Number(checkoutBooking.keyDepositPaid || 0) - Number(checkoutBooking.keyDepositRefunded || 0), 0);
       if (checkoutRefundKeyDeposit && refundableKeyDeposit > 0) {
-        const { error: refundError } = await supabase.from("motel_payments").insert({
+        const { error: refundError } = await supabase.from("payments").insert({
           booking_id: checkoutBooking.id,
+          guest_name: checkoutBooking.guest_name,
+          room_number: checkoutBooking.room_number || "-",
           amount: refundableKeyDeposit,
-          payment_method: getKeyDepositMethodLabel("refunded", checkoutRefundMethod),
+          payment_method: checkoutRefundMethod,
           payment_date: todayDate(),
+          notes: getKeyDepositMethodLabel("refunded", checkoutRefundMethod),
         });
         if (refundError) throw refundError;
       }
       const newBalance = Math.max(Number(checkoutBooking.total_amount || 0) - newRoomPaid, 0);
       const { error: bookingError } = await supabase
-        .from("motel_bookings")
+        .from("bookings")
         .update({
           status: "Checked Out",
           deposit: newRoomPaid,
@@ -3438,7 +3704,7 @@ function TextAreaField({
       if (bookingError) throw bookingError;
       if (checkoutBooking.room_id) {
         const { error: roomError } = await supabase
-          .from("motel_rooms")
+          .from("rooms")
           .update({ status: "Cleaning" })
           .eq("id", checkoutBooking.room_id);
         if (roomError) throw roomError;
