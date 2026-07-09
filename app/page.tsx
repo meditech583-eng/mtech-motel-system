@@ -220,6 +220,26 @@ function isCheckOutPayment(payment: Payment) {
 function getKeyDepositMethodLabel(action: "received" | "refunded", method: string) {
   return `${action === "received" ? KEY_DEPOSIT_RECEIVED_PREFIX : KEY_DEPOSIT_REFUNDED_PREFIX} - ${method}`;
 }
+function getPaymentTypeLabel(payment: Payment) {
+  if (isKeyDepositReceivedPayment(payment)) return "Key Deposit (Refundable)";
+  if (isKeyDepositRefundPayment(payment)) return "Key Deposit Refund";
+  if (isCheckOutPayment(payment)) return "Check-Out Room Payment";
+  return "Room / Accommodation Payment";
+}
+function getCleanPaymentMethod(payment: Payment) {
+  const method = String(payment.payment_method || "-");
+  return method
+    .replace(KEY_DEPOSIT_RECEIVED_PREFIX, "")
+    .replace(KEY_DEPOSIT_REFUNDED_PREFIX, "")
+    .replace("Check-Out Payment", "")
+    .replace(/^-/, "")
+    .trim() || method;
+}
+function getPaymentTypeBadgeClass(payment: Payment) {
+  if (isKeyDepositReceivedPayment(payment)) return "border-amber-200 bg-amber-50 text-amber-800";
+  if (isKeyDepositRefundPayment(payment)) return "border-sky-200 bg-sky-50 text-sky-800";
+  return "border-emerald-200 bg-emerald-50 text-emerald-800";
+}
 const RECEIPT_BUSINESS = {
   name: "Boroko Motel & Apartments",
   organization: "The Salvation Army - Papua New Guinea and Solomon Islands Territory",
@@ -401,7 +421,7 @@ export default function MotelSupabasePremiumPage() {
   const [auditSearch, setAuditSearch] = useState("");
   const [auditActionFilter, setAuditActionFilter] = useState("All");
   const [reportStartDate, setReportStartDate] = useState(firstDayOfMonth());
-  const [reportEndDate, setReportEndDate] = useState(todayDate());
+  const [reportEndDate, setReportEndDate] = useState(isoToday());
   const [roomForm, setRoomForm] = useState({
     room_number: "",
     room_type: "Apartment",
@@ -677,7 +697,7 @@ export default function MotelSupabasePremiumPage() {
         invoiceNumber: formatInvoiceNumber(booking.id),
         invoiceStatus: getInvoiceStatus(booking),
         amountDue: Number(booking.due || 0),
-        issueDate: booking.created_at ? String(booking.created_at).split("T")[0] : todayDate(),
+        issueDate: booking.created_at ? String(booking.created_at).split("T")[0] : isoToday(),
       }))
       .sort((a, b) => Number(b.amountDue || 0) - Number(a.amountDue || 0));
   }, [bookingViews]);
@@ -691,7 +711,7 @@ export default function MotelSupabasePremiumPage() {
         invoiceNumber: formatInvoiceNumber(booking.id),
         invoiceStatus: getInvoiceStatus(booking),
         amountDue: Number(booking.due || 0),
-        issueDate: booking.created_at ? String(booking.created_at).split("T")[0] : todayDate(),
+        issueDate: booking.created_at ? String(booking.created_at).split("T")[0] : isoToday(),
       }))
       .filter((invoice) => {
         const matchesSearch =
@@ -788,26 +808,62 @@ export default function MotelSupabasePremiumPage() {
     );
   }, [selectedBooking, guests]);
   const dashboardStats = useMemo(() => {
-    const totalRevenue = payments.filter((payment) => isRoomRevenuePayment(payment)).reduce((sum, payment) => sum + Number(payment.amount || 0), 0);
+    const todayIso = isoToday();
+    const monthStart = `${todayIso.slice(0, 8)}01`;
+    const roomRevenuePayments = payments.filter((payment) => isRoomRevenuePayment(payment));
+    const totalRevenue = roomRevenuePayments.reduce((sum, payment) => sum + Number(payment.amount || 0), 0);
+    const todayRevenue = roomRevenuePayments
+      .filter((payment) => String(payment.payment_date || payment.created_at || "").slice(0, 10) === todayIso)
+      .reduce((sum, payment) => sum + Number(payment.amount || 0), 0);
+    const monthRevenue = roomRevenuePayments
+      .filter((payment) => {
+        const date = String(payment.payment_date || payment.created_at || "").slice(0, 10);
+        return date >= monthStart && date <= todayIso;
+      })
+      .reduce((sum, payment) => sum + Number(payment.amount || 0), 0);
     const totalExpenses = expenses.reduce((sum, expense) => sum + Number(expense.amount || 0), 0);
+    const monthExpenses = expenses
+      .filter((expense) => {
+        const date = String(expense.expense_date || expense.created_at || "").slice(0, 10);
+        return date >= monthStart && date <= todayIso;
+      })
+      .reduce((sum, expense) => sum + Number(expense.amount || 0), 0);
     const totalOutstanding = bookingViews.reduce((sum, booking) => sum + Number(booking.due || 0), 0);
+    const activeBookings = bookingViews.filter((booking) => booking.status !== "Cancelled");
+    const activeRoomRevenue = activeBookings.reduce((sum, booking) => sum + Number(booking.total_amount || 0), 0);
+    const activeRoomPaid = activeBookings.reduce((sum, booking) => sum + Number(booking.roomPaid || 0), 0);
+    const totalRooms = rooms.length;
+    const occupiedRooms = rooms.filter((r) => r.status === "Occupied").length;
+    const reservedRooms = rooms.filter((r) => r.status === "Reserved").length;
+    const unavailableRooms = rooms.filter((r) => r.status === "Occupied" || r.status === "Reserved" || r.status === "Maintenance").length;
+    const checkedInBookings = bookingViews.filter((booking) => booking.status === "Checked In");
     return {
-      totalRooms: rooms.length,
+      totalRooms,
       availableRooms: rooms.filter((r) => r.status === "Available").length,
-      occupiedRooms: rooms.filter((r) => r.status === "Occupied").length,
-      reservedRooms: rooms.filter((r) => r.status === "Reserved").length,
+      occupiedRooms,
+      reservedRooms,
       cleaningRooms: rooms.filter((r) => r.status === "Cleaning").length,
       maintenanceRooms: rooms.filter((r) => r.status === "Maintenance").length,
+      occupancyRate: totalRooms ? Math.round((unavailableRooms / totalRooms) * 100) : 0,
       totalGuests: guests.length,
       totalBookings: bookings.length,
+      activeBookings: activeBookings.length,
+      checkedInGuests: checkedInBookings.length,
+      overdueCheckouts: checkedInBookings.filter((booking) => String(booking.check_out_date || "") < todayIso).length,
+      openMaintenanceJobs: maintenanceJobs.filter((job) => (job.status || "Open") !== "Completed").length,
       totalPayments: payments.length,
       totalRevenue,
+      todayRevenue,
+      monthRevenue,
       totalExpenses,
+      monthExpenses,
       netProfit: totalRevenue - totalExpenses,
+      monthNetProfit: monthRevenue - monthExpenses,
       totalOutstanding,
+      collectionRate: activeRoomRevenue ? Math.round((activeRoomPaid / activeRoomRevenue) * 100) : 0,
       totalAuditLogs: auditLogs.length,
     };
-  }, [rooms, guests, bookings, payments, expenses, bookingViews, auditLogs]);
+  }, [rooms, guests, bookings, payments, expenses, bookingViews, maintenanceJobs, auditLogs]);
   const availableRooms = useMemo(() => {
     return rooms.filter(
       (room) =>
@@ -987,12 +1043,12 @@ export default function MotelSupabasePremiumPage() {
 
   const arrivalsToday = useMemo(() => {
     return bookingViews.filter(
-      (b) => b.check_in_date === todayDate() && b.status !== "Cancelled"
+      (b) => b.check_in_date === isoToday() && b.status !== "Cancelled"
     );
   }, [bookingViews]);
   const departuresToday = useMemo(() => {
     return bookingViews.filter(
-      (b) => b.check_out_date === todayDate() && b.status !== "Cancelled"
+      (b) => b.check_out_date === isoToday() && b.status !== "Cancelled"
     );
   }, [bookingViews]);
   const dueToday = useMemo(() => {
@@ -2284,7 +2340,8 @@ function printReceipt(bookingId: number) {
             (payment) => `
             <tr>
               <td style="padding:8px;border:1px solid #dbe3ef;">${payment.payment_date || "-"}</td>
-              <td style="padding:8px;border:1px solid #dbe3ef;">${payment.payment_method || "-"}</td>
+              <td style="padding:8px;border:1px solid #dbe3ef;font-weight:700;">${getPaymentTypeLabel(payment)}</td>
+              <td style="padding:8px;border:1px solid #dbe3ef;">${getCleanPaymentMethod(payment)}</td>
               <td style="padding:8px;border:1px solid #dbe3ef;text-align:right;">${formatK(payment.amount)}</td>
             </tr>
           `
@@ -2292,7 +2349,7 @@ function printReceipt(bookingId: number) {
           .join("")
       : `
         <tr>
-          <td colspan="3" style="padding:8px;border:1px solid #dbe3ef;text-align:center;">No payments yet</td>
+          <td colspan="4" style="padding:8px;border:1px solid #dbe3ef;text-align:center;">No payments yet</td>
         </tr>
       `;
     const receiptWindow = window.open("", "_blank", "width=900,height=700");
@@ -2343,6 +2400,7 @@ function printReceipt(bookingId: number) {
                 <thead>
                   <tr style="background:#eef2ff;">
                     <th style="padding:10px;border:1px solid #dbe3ef;text-align:left;">Payment Date</th>
+                    <th style="padding:10px;border:1px solid #dbe3ef;text-align:left;">Type</th>
                     <th style="padding:10px;border:1px solid #dbe3ef;text-align:left;">Method</th>
                     <th style="padding:10px;border:1px solid #dbe3ef;text-align:right;">Amount</th>
                   </tr>
@@ -2690,11 +2748,36 @@ function printReceipt(bookingId: number) {
       )}
       {canAccessTab(staffRole, "dashboard") && activeTab === "dashboard" && (
         <section className="space-y-6">
+          <section className="rounded-[32px] border border-slate-200 bg-gradient-to-br from-slate-950 via-slate-900 to-indigo-950 p-6 text-white shadow-sm">
+            <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
+              <div>
+                <p className="text-xs font-bold uppercase tracking-[0.35em] text-indigo-200">Version 2.0 Executive Overview</p>
+                <h2 className="mt-2 text-3xl font-black tracking-tight">Boroko Motel Live Operations</h2>
+                <p className="mt-2 max-w-2xl text-sm text-slate-300">Today revenue, monthly cashflow, occupancy, collections, overdue check-outs, and maintenance pressure in one management view.</p>
+              </div>
+              <button
+                onClick={() => loadAllData(true)}
+                className="rounded-2xl border border-white/15 bg-white/10 px-4 py-3 text-sm font-bold text-white hover:bg-white/15"
+              >
+                Refresh Live Data
+              </button>
+            </div>
+            <div className="mt-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
+              <DarkMoneyCard label="Today Revenue" value={dashboardStats.todayRevenue} subtext="Room payments today" />
+              <DarkMoneyCard label="Month Revenue" value={dashboardStats.monthRevenue} subtext="Current month" />
+              <DarkMoneyCard label="Month Profit" value={dashboardStats.monthNetProfit} subtext="Revenue minus expenses" />
+              <DarkStatCard label="Occupancy" value={`${dashboardStats.occupancyRate}%`} subtext="Occupied, reserved & maintenance" />
+              <DarkStatCard label="Collection" value={`${dashboardStats.collectionRate}%`} subtext="Paid against active bookings" />
+            </div>
+          </section>
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
             <PremiumStatCard label="Total Rooms" value={dashboardStats.totalRooms} subtext="Live inventory" />
             <PremiumStatCard label="Available" value={dashboardStats.availableRooms} subtext="Ready for guests" />
             <PremiumStatCard label="Occupied" value={dashboardStats.occupiedRooms} subtext="Currently in use" />
             <PremiumStatCard label="Reserved" value={dashboardStats.reservedRooms} subtext="Upcoming stays" />
+            <PremiumStatCard label="Checked In" value={dashboardStats.checkedInGuests} subtext="Guests in house" />
+            <PremiumStatCard label="Overdue Check-Out" value={dashboardStats.overdueCheckouts} subtext="Needs follow-up" />
+            <PremiumStatCard label="Open Maintenance" value={dashboardStats.openMaintenanceJobs} subtext="Jobs not completed" />
             <PremiumStatCard label="Guests" value={dashboardStats.totalGuests} subtext="Saved profiles" />
             <PremiumStatCard label="Bookings" value={dashboardStats.totalBookings} subtext="Stay records" />
             <PremiumStatCard label="Payments" value={dashboardStats.totalPayments} subtext="Transactions saved" />
@@ -3501,8 +3584,8 @@ function printReceipt(bookingId: number) {
                         <div key={payment.id} className="rounded-2xl border border-slate-200 bg-white p-3">
                           <div className="flex items-start justify-between gap-3">
                             <div>
-                              <p className="font-semibold text-slate-800">{payment.payment_method || "Unknown method"}</p>
-                              <p className="text-sm text-slate-500">{payment.payment_date || "-"}</p>
+                              <p className="font-semibold text-slate-800">{getPaymentTypeLabel(payment)}</p>
+                              <p className="text-sm text-slate-500">{getCleanPaymentMethod(payment)} • {payment.payment_date || "-"}</p>
                               <p className="text-xs text-slate-400">Receipt {formatReceiptNumber(payment.id)} • Invoice {formatInvoiceNumber(selectedBooking.id)}</p>
                             </div>
                             <p className="font-black text-slate-900">{formatK(payment.amount)}</p>
@@ -3961,10 +4044,12 @@ function printReceipt(bookingId: number) {
                         <p className="text-lg font-black">{formatK(payment.amount)}</p>
                       </div>
                       <div className="mt-3 grid gap-2 text-sm text-slate-700 sm:grid-cols-2">
-                        <p>Method: {payment.payment_method || "-"}</p>
+                        <p>Type: <span className={`rounded-full border px-2 py-1 text-xs font-bold ${getPaymentTypeBadgeClass(payment)}`}>{getPaymentTypeLabel(payment)}</span></p>
+                        <p>Method: {getCleanPaymentMethod(payment)}</p>
                         <p>Date: {payment.payment_date || "-"}</p>
                         <p>Booking Ref: {payment.booking_id}</p>
-                        <p>Remaining Due: {formatK(booking?.due || 0)}</p>
+                        <p>Room Balance Due: {formatK(booking?.due || 0)}</p>
+                        <p>Note: Key deposit is tracked separately because it is refundable.</p>
                       </div>
                       <div className="mt-4 grid grid-cols-3 gap-2">
                         <button
@@ -4690,6 +4775,35 @@ function MobileTabButton({
     </button>
   );
 }
+function DarkStatCard({
+  label,
+  value,
+  subtext,
+}: {
+  label: string;
+  value: number | string;
+  subtext: string;
+}) {
+  return (
+    <div className="rounded-[26px] border border-white/10 bg-white/10 p-5 shadow-sm backdrop-blur">
+      <p className="text-sm font-semibold text-slate-300">{label}</p>
+      <p className="mt-2 text-3xl font-black tracking-tight text-white">{value}</p>
+      <p className="mt-2 text-xs uppercase tracking-[0.2em] text-indigo-200">{subtext}</p>
+    </div>
+  );
+}
+function DarkMoneyCard({
+  label,
+  value,
+  subtext,
+}: {
+  label: string;
+  value: number;
+  subtext: string;
+}) {
+  return <DarkStatCard label={label} value={formatK(value)} subtext={subtext} />;
+}
+
 function PremiumStatCard({
   label,
   value,
